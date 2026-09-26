@@ -11,12 +11,11 @@
 #define CENTRE_TILE_Y 49
 #define TILES_AROUND_CENTRE 1
 
-//the middle of the centre tile: the tile size times how far it is from tile
-//32, the middle of the map, plus half a tile, with east as +Y. the ground
-//there is at 67
-#define START_X (-17.5f * PE_TERRAIN_TILE_SIZE)
-#define START_Y (-0.5f * PE_TERRAIN_TILE_SIZE)
-#define START_Z 150.0f
+//in front of the Goldshire inn, sixty yards north of it and looking south. the
+//inn stands at X -9464, Y -24, on ground at 56
+#define START_X -9404.0f
+#define START_Y -24.0f
+#define START_Z 85.0f
 
 //the ground fades into the horizon colour and the sky climbs from it to the
 //zenith, so the fog and the horizon have to be the same
@@ -42,7 +41,7 @@ static PTerrainWorld world;
 static bool walking;
 
 static float yaw = GLM_PI;
-static float pitch = -0.35f;
+static float pitch = -0.2f;
 
 static void update_camera_direction() {
   main_camera.front[0] = cosf(pitch) * cosf(yaw);

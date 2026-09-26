@@ -15,6 +15,11 @@
 #define ALPHA_SIZE (ALPHA_DIM * ALPHA_DIM)
 #define ALPHA_PACKED (ALPHA_SIZE / 2)
 
+#define BUILDINGS_MAX 64
+#define BUILDING_PATH_MAX 128
+#define PLACEMENTS_MAX 256
+#define MODF_SIZE 64
+
 #define WHM_MAGIC 0x314D4857
 #define WWT_MAGIC 0x31545757
 
@@ -85,6 +90,32 @@ typedef struct ChunkWater {
   uint8_t visible[LIQUID_TILES];
 } ChunkWater;
 
+typedef struct Placement {
+  uint32_t building;
+  uint32_t unique_id;
+  float position[3];
+  float rotation[3];
+  float bounds[6];
+  uint16_t flags;
+  uint16_t doodad_set;
+} Placement;
+
+static Placement placements[PLACEMENTS_MAX];
+static int placement_count;
+
+//the buildings the tile places, as the game names them (lowercase, forward
+//slashes, .wmo) and as they are converted to (.wwb)
+static char building_sources[BUILDINGS_MAX][BUILDING_PATH_MAX];
+static char building_files[BUILDINGS_MAX][BUILDING_PATH_MAX];
+static int building_count;
+
+static const uint8_t *building_names;
+static uint32_t building_names_size;
+static const uint8_t *building_offsets;
+static uint32_t building_offset_count;
+static const uint8_t *placement_records;
+static uint32_t placement_records_size;
+
 static Chunk chunks[CHUNKS];
 static ChunkWater waters[CHUNKS];
 static char textures[TEXTURES_MAX][TEXTURE_PATH_MAX];
@@ -129,11 +160,15 @@ static uint8_t *read_file(const char *path, size_t *size) {
   return bytes;
 }
 
+static void normalise_separators(char *name) {
+  for (char *c = name; *c; c++)
+    *c = *c == '\\' ? '/' : tolower((unsigned char)*c);
+}
+
 //Tileset\Elwynn\Grass.blp becomes tileset/elwynn/grass.png, the name the
 //engine looks a texture up by
 static void normalise_texture_name(char *name) {
-  for (char *c = name; *c; c++)
-    *c = *c == '\\' ? '/' : tolower((unsigned char)*c);
+  normalise_separators(name);
 
   size_t length = strlen(name);
   if (length > 4 && strcmp(name + length - 4, ".blp") == 0)
@@ -352,6 +387,76 @@ static int read_chunk(const uint8_t *chunk_start, uint32_t size) {
   return 0;
 }
 
+static int ends_with(const char *text, const char *suffix) {
+  size_t length = strlen(text);
+  size_t suffix_length = strlen(suffix);
+
+  return length > suffix_length &&
+         strcmp(text + length - suffix_length, suffix) == 0;
+}
+
+static int find_or_add_building(const char *source) {
+  for (int i = 0; i < building_count; i++)
+    if (strcmp(building_sources[i], source) == 0)
+      return i;
+
+  if (building_count == BUILDINGS_MAX)
+    return -1;
+
+  int slot = building_count++;
+  strcpy(building_sources[slot], source);
+  strcpy(building_files[slot], source);
+  strcpy(building_files[slot] + strlen(source) - 4, ".wwb");
+  return slot;
+}
+
+static int read_placement(const uint8_t *record, Placement *placement) {
+  uint32_t name_id = read_u32(record);
+  if (name_id >= building_offset_count)
+    return fail("a placement names a building that is not listed");
+
+  uint32_t offset = read_u32(building_offsets + name_id * sizeof(uint32_t));
+  if (offset >= building_names_size)
+    return fail("a building name starts past the end of the name block");
+
+  char source[BUILDING_PATH_MAX];
+  size_t length = strnlen((const char *)building_names + offset,
+                          building_names_size - offset);
+  if (length >= sizeof(source))
+    return fail("a building path is too long");
+
+  memcpy(source, building_names + offset, length);
+  source[length] = 0;
+  normalise_separators(source);
+
+  if (ends_with(source, ".wmo") == 0)
+    return fail("a placed building is not a .wmo");
+
+  int building = find_or_add_building(source);
+  if (building < 0)
+    return fail("the tile places more kinds of building than fit");
+
+  placement->building = building;
+  placement->unique_id = read_u32(record + 4);
+  memcpy(placement->position, record + 8, sizeof(placement->position));
+  memcpy(placement->rotation, record + 20, sizeof(placement->rotation));
+  memcpy(placement->bounds, record + 32, sizeof(placement->bounds));
+  placement->flags = read_u16(record + 56);
+  placement->doodad_set = read_u16(record + 58);
+  return 0;
+}
+
+static int read_placements(void) {
+  placement_count = placement_records_size / MODF_SIZE;
+  if (placement_count > PLACEMENTS_MAX)
+    return fail("the tile has more building placements than fit");
+
+  for (int i = 0; i < placement_count; i++)
+    if (read_placement(placement_records + i * MODF_SIZE, &placements[i]) != 0)
+      return 1;
+  return 0;
+}
+
 static int read_tile(const uint8_t *bytes, size_t size) {
   size_t offset = 0;
 
@@ -367,6 +472,16 @@ static int read_tile(const uint8_t *bytes, size_t size) {
       result = read_textures(data, chunk_size);
     else if (has_magic(bytes + offset, "KNCM"))
       result = read_chunk(bytes + offset, chunk_size);
+    else if (has_magic(bytes + offset, "OMWM")) {
+      building_names = data;
+      building_names_size = chunk_size;
+    } else if (has_magic(bytes + offset, "DIWM")) {
+      building_offsets = data;
+      building_offset_count = chunk_size / sizeof(uint32_t);
+    } else if (has_magic(bytes + offset, "FDOM")) {
+      placement_records = data;
+      placement_records_size = chunk_size;
+    }
 
     if (result != 0)
       return result;
@@ -376,7 +491,8 @@ static int read_tile(const uint8_t *bytes, size_t size) {
   for (int i = 0; i < CHUNKS; i++)
     if (chunks[i].found == 0)
       return fail("the tile is missing a chunk");
-  return 0;
+
+  return read_placements();
 }
 
 //the tile is named for where it sits: map_<x>_<y>.adt
@@ -415,6 +531,25 @@ static int write_metadata(const char *path, int tile_x, int tile_y) {
     for (uint32_t l = 0; l < chunks[i].layer_count; l++)
       fprintf(file, "%s%u", l ? "," : "", chunks[i].layer_textures[l]);
     fprintf(file, "],\"holes\":%u}", chunks[i].holes);
+  }
+  fprintf(file, "],\"wmoNames\":[");
+  for (int i = 0; i < building_count; i++)
+    fprintf(file, "%s\"%s\"", i ? "," : "", building_files[i]);
+
+  fprintf(file, "],\"wmos\":[");
+  for (int i = 0; i < placement_count; i++) {
+    const Placement *p = &placements[i];
+
+    fprintf(file,
+            "%s{\"nameId\":%u,\"uniqueId\":%u,"
+            "\"pos\":[%.4f,%.4f,%.4f],\"rot\":[%.4f,%.4f,%.4f],"
+            "\"bounds\":[%.4f,%.4f,%.4f,%.4f,%.4f,%.4f],"
+            "\"flags\":%u,\"doodadSet\":%u}",
+            i ? "," : "", p->building, p->unique_id, p->position[0],
+            p->position[1], p->position[2], p->rotation[0], p->rotation[1],
+            p->rotation[2], p->bounds[0], p->bounds[1], p->bounds[2],
+            p->bounds[3], p->bounds[4], p->bounds[5], p->flags,
+            p->doodad_set);
   }
   fprintf(file, "]}\n");
 
@@ -477,7 +612,8 @@ int main(int argc, char **argv) {
     fprintf(stderr,
             "usage: adt2wot <map_x_y.adt> <output base>\n"
             "writes <output base>.wot, .whm and .wwt (the water), and prints the PNG each of "
-            "the tile's textures is to be converted to\n");
+            "the tile's textures is to be converted to, as 'texture <png>', and "
+            "each building it places, as 'building <wmo>'\n");
     return 2;
   }
 
@@ -503,7 +639,9 @@ int main(int argc, char **argv) {
     return 1;
 
   for (int i = 0; i < texture_count; i++)
-    puts(textures[i]);
+    printf("texture %s\n", textures[i]);
+  for (int i = 0; i < building_count; i++)
+    printf("building %s\n", building_sources[i]);
 
   free(bytes);
   return 0;

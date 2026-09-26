@@ -20,6 +20,7 @@ make                           # here: builds ./pwow and ./adt2wot
 - `Makefile` has `WORKDIR := /root/pengine` hardcoded and includes pengine's `include.make`. The compile flags matter to a consumer, not just the engine: `-fcommon` and the `CGLM_FORCE_*` defines change struct layout and projection maths.
 - pengine is a **static library**, and `make` here only compares `pwow.c` against `libpengine.a`'s timestamp. After any engine change, rebuild the engine and then `make -B` here, or a stale binary is what you run.
 - There are no tests and no lint target. "It builds" and "it renders correctly" are the only checks; see below for how to look at it.
+- `make` also builds `adt2wot` and `wmo2wwb`, the two converters in `tools/`, which `prepare_tile.sh` calls.
 - `prepare_tile.sh` reads the game data from `$GAME_DATA` (default `/root/sources/WoWee/Data/expansions/classic`) and converts BLP textures with `$BLP_CONVERT` (WoWee's `blp_convert`, default under `/root/sources/WoWee/build/bin`). It skips textures already converted and tiles the game does not have. `data/` is gitignored on purpose: the textures come from the user's install and are not ours to distribute.
 
 Controls: W A S D move, Space / C up and down (flying only), I K pitch, J L turn, Shift is faster, Tab toggles between flying and walking, Q quits. Walking follows the ground at a 2 yard eye height at 7 yards a second, using `pe_terrain_world_height_at()`; over a hole or past the loaded tiles it keeps its last height, and it does not know about water, so it wades under a lake.
@@ -28,12 +29,17 @@ Controls: W A S D move, Space / C up and down (flying only), I K pitch, J L turn
 
 ```
 world/maps/<map>/<map>_<x>_<y>.adt ──adt2wot──▶ data/<map>_<x>_<y>.wot + .whm + .wwt
-tileset/**/*.blp ──blp_convert──▶ data/tileset/**/*.png
+world/wmo/**/name.wmo + name_NNN.wmo ──wmo2wwb──▶ data/world/wmo/**/name.wwb
+*.blp (tile and building textures) ──blp_convert──▶ data/**/*.png
                                             │
               pe_vk_terrain_world_load_area() ◀┘  (pengine)
 ```
 
 `tools/adt2wot.c` is a standalone offline converter (no engine dependency) from Blizzard's ADT to WoWee's open `.wot` (JSON: tile coords, texture names, per-chunk layer ids and hole masks) and `.whm` (binary: 256 chunks of 145 heights plus alpha maps), plus a `.wwt` of its own for the water. It prints the PNG path of each texture the tile uses, which is how `prepare_tile.sh` knows what to convert.
+
+The `.wot` also carries the tile's buildings in WoWee's own `wmoNames` / `wmos` fields: each placement's raw ADT position, rotation in degrees, unique id, and the world box Blizzard stored for it. `adt2wot` prints `texture <png>` and `building <wmo path>` lines, which `prepare_tile.sh` acts on. `tools/wmo2wwb.c` converts one building, its root file and its `_NNN` group files, to a `.wwb`; a building with more than 64 groups is refused with exit code 3, which is how Stormwind (the whole city, 306 groups) is skipped. The engine logs the missing `.wwb` once and leaves those placements out.
+
+`.wwb` is ours too (`WWB1`): the box round all the groups, a texture path table, materials `{texture, blend, flags}`, then per group its flags, 36-byte vertices, u32 indices and batches `{first_index, index_count, material}`. WoWee's own building format merges materials per group and loses the batches, which is why it is not used.
 
 `.wwt` is **not WoWee's format**: WoWee's `.wot` keeps one flat height per water chunk, which loses the real surface. Ours is `WWT1`, a count, then per water chunk its index, liquid type (water, ocean, magma, slime), 9x9 float heights, 9x9 depth bytes and 64 quad-visible flags. A tile with no water has no `.wwt`, and the engine treats a missing one as fine.
 
@@ -45,7 +51,10 @@ Things that were checked against real data and are easy to get wrong:
 - A layer above the base with no alpha map covers everything under it.
 - Classic stores water per chunk (MCLQ, not the later MH2O). Its 9x9 grid sits on the chunk's corner vertices, rows along X and columns along Y like the ground, and a vertex the liquid does not reach holds `FLT_MAX`, which the converter replaces with the block's lowest height. The liquid type comes from the chunk's flags, and a quad tile flag of `0x0F` (or bit `0x80`) means no liquid there.
 - `pe_terrain_world_height_at()` answers with the surface that is drawn: each quad is four triangles fanned from its centre vertex, and the centre is often a yard off the plane of the corners (up to 2.4 yards from a bilinear guess in this data), so it does not interpolate the corners. It is `false` in a hole and in an unloaded tile.
-- The Goldshire block has 22 chunks with **hole masks**. Rectangular black-looking gaps in the ground are legitimate holes (building and cave footprints), not rendering cracks.
+- A building placement (MODF) is turned into a world position and orientation by one rule, taken from WoWee and confirmed here against the box Blizzard stored for every placement (worst error 2 mm over 49): translate, then Z, Y, X rotations by the degrees taken as `(rot[2], rot[0], rot[1] + 180)`, with the world's Y reflection in front. The `+180` is not optional: without it 29 of the 49 boxes are more than a yard out. The stored box is the union of the *group* boxes; a WMO's root box (MOHD) is sometimes stale (`farm.wmo`, `goldshireblacksmith.wmo`), so never compare against it.
+- About 7% of a building's indices are in no batch. They are collision-only triangles, absent from the game's own render batches too, and are what building collision would be made from.
+- Materials in these buildings use only blend modes 0 (opaque) and 1 (alpha-test, cut at 0.5); the ones for windows and leaves rely on the texture's own alpha. Vertex colours are baked light and are multiplied in.
+- The Goldshire block has 22 chunks with **hole masks**, and the inn stands in one of them. Rectangular black-looking gaps in the ground are legitimate holes (building and cave footprints), not rendering cracks.
 
 ## How the program is put together
 
@@ -53,7 +62,7 @@ Things that were checked against real data and are easy to get wrong:
 
 1. `init` builds the world: `pe_vk_terrain_world_create()`, then `pe_vk_terrain_world_load_area()` for a square of tiles around a centre. Meshes, materials and the shared texture cache are created here, on the GPU, once. There is no unloading yet.
 2. `update` moves the camera from `input.<KEY>.pressed`, scaled by `delta_time` (seconds).
-3. The engine calls the `pe_vk_draw_scene` hook every frame. `pwow_draw_scene` fills a `PTerrainFrame` (camera via `pe_terrain_frame_set_camera()`, which also stamps the time the water animates by, then lighting, fog and sky colours) and hands it to `pe_vk_terrain_world_draw()`, which uploads it, draws the sky, the ground of every tile, and last the water, which blends over the ground.
+3. The engine calls the `pe_vk_draw_scene` hook every frame. `pwow_draw_scene` fills a `PTerrainFrame` (camera via `pe_terrain_frame_set_camera()`, which also stamps the time the water animates by, then lighting, fog and sky colours) and hands it to `pe_vk_terrain_world_draw()`, which uploads it, draws the sky, the ground of every tile, the buildings, and last the water, which blends over everything.
 
 Update and draw both run on the main thread, so the camera is not raced.
 
