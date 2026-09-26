@@ -22,7 +22,7 @@ make                           # here: builds ./pwow and ./adt2wot
 - There are no tests and no lint target. "It builds" and "it renders correctly" are the only checks; see below for how to look at it.
 - `prepare_tile.sh` reads the game data from `$GAME_DATA` (default `/root/sources/WoWee/Data/expansions/classic`) and converts BLP textures with `$BLP_CONVERT` (WoWee's `blp_convert`, default under `/root/sources/WoWee/build/bin`). It skips textures already converted and tiles the game does not have. `data/` is gitignored on purpose: the textures come from the user's install and are not ours to distribute.
 
-Controls: W A S D move, Space / C up and down, I K pitch, J L turn, Shift is 4x speed, Q quits.
+Controls: W A S D move, Space / C up and down (flying only), I K pitch, J L turn, Shift is faster, Tab toggles between flying and walking, Q quits. Walking follows the ground at a 2 yard eye height at 7 yards a second, using `pe_terrain_world_height_at()`; over a hole or past the loaded tiles it keeps its last height, and it does not know about water, so it wades under a lake.
 
 ## Data pipeline
 
@@ -44,6 +44,7 @@ Things that were checked against real data and are easy to get wrong:
 - Every layer's alpha map is written to the `.whm` as **8-bit, decoded, back to back, one per layer above the base**. The `.wot` does not record where a layer's map starts, so pengine's loader infers the layout from the blob's size; that is why the converter normalises 4-bit and run-length maps instead of copying them.
 - A layer above the base with no alpha map covers everything under it.
 - Classic stores water per chunk (MCLQ, not the later MH2O). Its 9x9 grid sits on the chunk's corner vertices, rows along X and columns along Y like the ground, and a vertex the liquid does not reach holds `FLT_MAX`, which the converter replaces with the block's lowest height. The liquid type comes from the chunk's flags, and a quad tile flag of `0x0F` (or bit `0x80`) means no liquid there.
+- `pe_terrain_world_height_at()` answers with the surface that is drawn: each quad is four triangles fanned from its centre vertex, and the centre is often a yard off the plane of the corners (up to 2.4 yards from a bilinear guess in this data), so it does not interpolate the corners. It is `false` in a hole and in an unloaded tile.
 - The Goldshire block has 22 chunks with **hole masks**. Rectangular black-looking gaps in the ground are legitimate holes (building and cave footprints), not rendering cracks.
 
 ## How the program is put together

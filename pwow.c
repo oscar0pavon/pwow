@@ -26,10 +26,19 @@
 
 #define MOVE_SPEED 60.0f
 #define FAST_MOVE_FACTOR 4.0f
+
+//on foot: a human's eye height and a run, in yards and yards a second, and how
+//quickly the camera settles onto the ground as it moves over it
+#define EYE_HEIGHT 2.0f
+#define WALK_SPEED 7.0f
+#define WALK_FAST_FACTOR 3.0f
+#define GROUND_FOLLOW_RATE 12.0f
 #define TURN_SPEED 1.5f
 #define PITCH_LIMIT 1.4f
 
 static PTerrainWorld world;
+
+static bool walking;
 
 static float yaw = GLM_PI;
 static float pitch = -0.35f;
@@ -81,25 +90,57 @@ static void pwow_init() {
   pe_vk_draw_scene = &pwow_draw_scene;
 }
 
-static void move_camera(float distance) {
-  vec3 right;
-  glm_vec3_cross(main_camera.up, main_camera.front, right);
+//on foot, forward is along the ground, not along where the camera looks, so
+//looking down does not slow the walk and looking up does not lift off
+static void movement_direction(vec3 direction) {
+  vec3 forward;
+  glm_vec3_copy(main_camera.front, forward);
+  if (walking) {
+    forward[2] = 0;
+    glm_vec3_normalize(forward);
+  }
 
-  vec3 direction = {0, 0, 0};
+  vec3 right;
+  glm_vec3_cross(main_camera.up, forward, right);
+  glm_vec3_normalize(right);
+
+  glm_vec3_zero(direction);
   if (input.W.pressed)
-    glm_vec3_add(direction, main_camera.front, direction);
+    glm_vec3_add(direction, forward, direction);
   if (input.S.pressed)
-    glm_vec3_sub(direction, main_camera.front, direction);
+    glm_vec3_sub(direction, forward, direction);
   if (input.D.pressed)
     glm_vec3_add(direction, right, direction);
   if (input.A.pressed)
     glm_vec3_sub(direction, right, direction);
+
+  if (walking)
+    return;
+
   if (input.SPACE.pressed)
     glm_vec3_add(direction, main_camera.up, direction);
   if (input.C.pressed)
     glm_vec3_sub(direction, main_camera.up, direction);
+}
 
+static void move_camera(float distance) {
+  vec3 direction;
+  movement_direction(direction);
   glm_vec3_muladds(direction, distance, main_camera.position);
+}
+
+//where there is no ground under the camera, over a hole or past the loaded
+//tiles, it stays as high as it was
+static void follow_ground(float seconds) {
+  float ground;
+  if (pe_terrain_world_height_at(&world, main_camera.position[0],
+                                 main_camera.position[1], &ground) == false)
+    return;
+
+  float target = ground + EYE_HEIGHT;
+  main_camera.position[2] +=
+      (target - main_camera.position[2]) *
+      (1 - expf(-GROUND_FOLLOW_RATE * seconds));
 }
 
 static void turn_camera(float angle) {
@@ -115,12 +156,24 @@ static void turn_camera(float angle) {
   pitch = glm_clamp(pitch, -PITCH_LIMIT, PITCH_LIMIT);
 }
 
+static float movement_speed() {
+  float base = walking ? WALK_SPEED : MOVE_SPEED;
+  float fast = walking ? WALK_FAST_FACTOR : FAST_MOVE_FACTOR;
+
+  return input.SHIFT.pressed ? base * fast : base;
+}
+
 static void pwow_update() {
-  float speed = input.SHIFT.pressed ? MOVE_SPEED * FAST_MOVE_FACTOR : MOVE_SPEED;
+  if (key_released(&input.TAB))
+    walking = !walking;
 
   turn_camera(TURN_SPEED * delta_time);
   update_camera_direction();
-  move_camera(speed * delta_time);
+  move_camera(movement_speed() * delta_time);
+
+  if (walking)
+    follow_ground(delta_time);
+
   camera_update(&main_camera);
 }
 
