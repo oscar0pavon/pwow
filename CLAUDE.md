@@ -27,13 +27,15 @@ Controls: W A S D move, Space / C up and down, I K pitch, J L turn, Shift is 4x 
 ## Data pipeline
 
 ```
-world/maps/<map>/<map>_<x>_<y>.adt ──adt2wot──▶ data/<map>_<x>_<y>.wot + .whm
+world/maps/<map>/<map>_<x>_<y>.adt ──adt2wot──▶ data/<map>_<x>_<y>.wot + .whm + .wwt
 tileset/**/*.blp ──blp_convert──▶ data/tileset/**/*.png
                                             │
               pe_vk_terrain_world_load_area() ◀┘  (pengine)
 ```
 
-`tools/adt2wot.c` is a standalone offline converter (no engine dependency) from Blizzard's ADT to WoWee's open `.wot` (JSON: tile coords, texture names, per-chunk layer ids and hole masks) and `.whm` (binary: 256 chunks of 145 heights plus alpha maps). It prints the PNG path of each texture the tile uses, which is how `prepare_tile.sh` knows what to convert.
+`tools/adt2wot.c` is a standalone offline converter (no engine dependency) from Blizzard's ADT to WoWee's open `.wot` (JSON: tile coords, texture names, per-chunk layer ids and hole masks) and `.whm` (binary: 256 chunks of 145 heights plus alpha maps), plus a `.wwt` of its own for the water. It prints the PNG path of each texture the tile uses, which is how `prepare_tile.sh` knows what to convert.
+
+`.wwt` is **not WoWee's format**: WoWee's `.wot` keeps one flat height per water chunk, which loses the real surface. Ours is `WWT1`, a count, then per water chunk its index, liquid type (water, ocean, magma, slime), 9x9 float heights, 9x9 depth bytes and 64 quad-visible flags. A tile with no water has no `.wwt`, and the engine treats a missing one as fine.
 
 Things that were checked against real data and are easy to get wrong:
 
@@ -41,6 +43,7 @@ Things that were checked against real data and are easy to get wrong:
 - Sub-chunk offsets inside an MCNK are counted from the start of the chunk *including* its 8-byte header.
 - Every layer's alpha map is written to the `.whm` as **8-bit, decoded, back to back, one per layer above the base**. The `.wot` does not record where a layer's map starts, so pengine's loader infers the layout from the blob's size; that is why the converter normalises 4-bit and run-length maps instead of copying them.
 - A layer above the base with no alpha map covers everything under it.
+- Classic stores water per chunk (MCLQ, not the later MH2O). Its 9x9 grid sits on the chunk's corner vertices, rows along X and columns along Y like the ground, and a vertex the liquid does not reach holds `FLT_MAX`, which the converter replaces with the block's lowest height. The liquid type comes from the chunk's flags, and a quad tile flag of `0x0F` (or bit `0x80`) means no liquid there.
 - The Goldshire block has 22 chunks with **hole masks**. Rectangular black-looking gaps in the ground are legitimate holes (building and cave footprints), not rendering cracks.
 
 ## How the program is put together
@@ -49,7 +52,7 @@ Things that were checked against real data and are easy to get wrong:
 
 1. `init` builds the world: `pe_vk_terrain_world_create()`, then `pe_vk_terrain_world_load_area()` for a square of tiles around a centre. Meshes, materials and the shared texture cache are created here, on the GPU, once. There is no unloading yet.
 2. `update` moves the camera from `input.<KEY>.pressed`, scaled by `delta_time` (seconds).
-3. The engine calls the `pe_vk_draw_scene` hook every frame. `pwow_draw_scene` fills a `PTerrainFrame` (camera via `pe_terrain_frame_set_camera()`, then lighting, fog and sky colours) and hands it to `pe_vk_terrain_world_draw()`, which uploads it, draws the sky, then every tile.
+3. The engine calls the `pe_vk_draw_scene` hook every frame. `pwow_draw_scene` fills a `PTerrainFrame` (camera via `pe_terrain_frame_set_camera()`, which also stamps the time the water animates by, then lighting, fog and sky colours) and hands it to `pe_vk_terrain_world_draw()`, which uploads it, draws the sky, the ground of every tile, and last the water, which blends over the ground.
 
 Update and draw both run on the main thread, so the camera is not raced.
 
@@ -57,6 +60,7 @@ Conventions specific to this program:
 
 - World units are yards; a tile is `PE_TERRAIN_TILE_SIZE` (1600/3). Tile (32, 32) is the middle of the map, and rows run toward -X and columns toward -Y, so the start position is `(32 - tile_y - 0.5) * size, (32 - tile_x - 0.5) * size`.
 - **The fog colour and the sky's horizon colour must be the same** (`HORIZON_COLOR`), or the far ground shows as a band against the sky. `FOG_END` also acts as the view distance: chunks entirely past it are not drawn.
+- The engine's `transparency` flag in `PCreateShaderInfo` sets blend factors but never enables blending, so it does nothing. The water pipeline passes its own colour-blend state instead.
 - The renderer's render pass clears to black on purpose, and `pe_change_background_color()` does nothing on the Vulkan path. Do not use it to set a sky.
 
 ## Looking at the result

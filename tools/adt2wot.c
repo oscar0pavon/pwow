@@ -16,6 +16,30 @@
 #define ALPHA_PACKED (ALPHA_SIZE / 2)
 
 #define WHM_MAGIC 0x314D4857
+#define WWT_MAGIC 0x31545757
+
+#define LIQUID_GRID 9
+#define LIQUID_VERTICES (LIQUID_GRID * LIQUID_GRID)
+#define LIQUID_TILES 64
+#define LIQUID_VERTEX_SIZE 8
+#define LIQUID_HEADER_SIZE 8
+#define LIQUID_BLOCK_SIZE                                                      \
+  (LIQUID_HEADER_SIZE + LIQUID_VERTICES * LIQUID_VERTEX_SIZE + LIQUID_TILES)
+
+//a vertex with no liquid is stored as the largest float
+#define LIQUID_NO_HEIGHT 1e30f
+
+//the tile flag that says a tile has no liquid, and the legacy hidden bit
+#define LIQUID_TILE_NONE 0x0F
+#define LIQUID_TILE_HIDDEN 0x80
+
+//which of a chunk's flags say what kind of liquid it holds
+#define MCNK_FLAGS 0
+#define MCNK_OFFSET_LIQUID 0x60
+#define MCNK_SIZE_LIQUID 0x64
+#define MCNK_FLAG_OCEAN 0x08
+#define MCNK_FLAG_MAGMA 0x10
+#define MCNK_FLAG_SLIME 0x20
 
 //a chunk's header fields, counted from the byte after its 8 byte chunk header
 #define MCNK_INDEX_X 4
@@ -46,7 +70,23 @@ typedef struct Chunk {
   int found;
 } Chunk;
 
+typedef enum LiquidType {
+  LIQUID_WATER,
+  LIQUID_OCEAN,
+  LIQUID_MAGMA,
+  LIQUID_SLIME
+} LiquidType;
+
+typedef struct ChunkWater {
+  int present;
+  uint32_t type;
+  float heights[LIQUID_VERTICES];
+  uint8_t depths[LIQUID_VERTICES];
+  uint8_t visible[LIQUID_TILES];
+} ChunkWater;
+
 static Chunk chunks[CHUNKS];
+static ChunkWater waters[CHUNKS];
 static char textures[TEXTURES_MAX][TEXTURE_PATH_MAX];
 static int texture_count;
 
@@ -199,6 +239,66 @@ static void decode_layer_alpha(const uint8_t *layers, uint32_t layer_count,
     unpack_four_bit(blob + offset, alpha);
 }
 
+static uint32_t liquid_type_from_flags(uint32_t flags) {
+  if (flags & MCNK_FLAG_OCEAN)
+    return LIQUID_OCEAN;
+  if (flags & MCNK_FLAG_MAGMA)
+    return LIQUID_MAGMA;
+  if (flags & MCNK_FLAG_SLIME)
+    return LIQUID_SLIME;
+  return LIQUID_WATER;
+}
+
+//a vertex the liquid does not reach is filled in with the block's own lowest
+//height, which is where the surface it does have sits
+static void fill_missing_heights(float *heights, float fallback) {
+  for (int i = 0; i < LIQUID_VERTICES; i++)
+    if (heights[i] >= LIQUID_NO_HEIGHT || heights[i] != heights[i])
+      heights[i] = fallback;
+}
+
+static int any_tile_visible(const uint8_t *visible) {
+  for (int i = 0; i < LIQUID_TILES; i++)
+    if (visible[i])
+      return 1;
+  return 0;
+}
+
+//INFO the water vertices are eight bytes each: a depth, two flow bytes and a
+//filler, then the height. magma has a texture coordinate pair where those
+//bytes are, so it has no depth and is drawn opaque
+static void read_water(const uint8_t *chunk_start, uint32_t total,
+                       const uint8_t *header, ChunkWater *water) {
+  uint32_t offset = read_u32(header + MCNK_OFFSET_LIQUID);
+  uint32_t size = read_u32(header + MCNK_SIZE_LIQUID);
+
+  if (offset == 0 || size < LIQUID_BLOCK_SIZE || offset + size > total ||
+      !has_magic(chunk_start + offset, "QLCM"))
+    return;
+
+  const uint8_t *block = chunk_start + offset + LIQUID_HEADER_SIZE;
+  const uint8_t *vertices = block + 8;
+  const uint8_t *tiles = vertices + LIQUID_VERTICES * LIQUID_VERTEX_SIZE;
+
+  float lowest;
+  memcpy(&lowest, block, sizeof(float));
+
+  water->type = liquid_type_from_flags(read_u32(header + MCNK_FLAGS));
+
+  for (int i = 0; i < LIQUID_VERTICES; i++) {
+    const uint8_t *vertex = vertices + i * LIQUID_VERTEX_SIZE;
+    memcpy(&water->heights[i], vertex + 4, sizeof(float));
+    water->depths[i] = water->type == LIQUID_MAGMA ? 255 : vertex[0];
+  }
+  fill_missing_heights(water->heights, lowest);
+
+  for (int i = 0; i < LIQUID_TILES; i++)
+    water->visible[i] = (tiles[i] & 0x0F) != LIQUID_TILE_NONE &&
+                        (tiles[i] & LIQUID_TILE_HIDDEN) == 0;
+
+  water->present = any_tile_visible(water->visible);
+}
+
 static int read_chunk(const uint8_t *chunk_start, uint32_t size) {
   const uint8_t *header = chunk_start + SUBCHUNK_HEADER;
   uint32_t total = size + SUBCHUNK_HEADER;
@@ -224,6 +324,8 @@ static int read_chunk(const uint8_t *chunk_start, uint32_t size) {
 
   Chunk *chunk = &chunks[index_y * CHUNKS_PER_SIDE + index_x];
   chunk->found = 1;
+  read_water(chunk_start, total, header,
+             &waters[index_y * CHUNKS_PER_SIDE + index_x]);
   chunk->layer_count = layer_count;
   chunk->holes = read_u16(header + MCNK_HOLES);
   memcpy(&chunk->base_height, header + MCNK_BASE_HEIGHT, sizeof(float));
@@ -343,11 +445,38 @@ static int write_heightmap(const char *path) {
   return 0;
 }
 
+static int write_water(const char *path) {
+  FILE *file = fopen(path, "wb");
+  if (file == NULL)
+    return fail("can't write the .wwt");
+
+  uint32_t count = 0;
+  for (int i = 0; i < CHUNKS; i++)
+    count += waters[i].present;
+
+  uint32_t header[2] = {WWT_MAGIC, count};
+  fwrite(header, sizeof(uint32_t), 2, file);
+
+  for (uint32_t i = 0; i < CHUNKS; i++) {
+    if (waters[i].present == 0)
+      continue;
+
+    fwrite(&i, sizeof(uint32_t), 1, file);
+    fwrite(&waters[i].type, sizeof(uint32_t), 1, file);
+    fwrite(waters[i].heights, sizeof(float), LIQUID_VERTICES, file);
+    fwrite(waters[i].depths, 1, LIQUID_VERTICES, file);
+    fwrite(waters[i].visible, 1, LIQUID_TILES, file);
+  }
+
+  fclose(file);
+  return 0;
+}
+
 int main(int argc, char **argv) {
   if (argc != 3) {
     fprintf(stderr,
             "usage: adt2wot <map_x_y.adt> <output base>\n"
-            "writes <output base>.wot and .whm, and prints the PNG each of "
+            "writes <output base>.wot, .whm and .wwt (the water), and prints the PNG each of "
             "the tile's textures is to be converted to\n");
     return 2;
   }
@@ -363,12 +492,14 @@ int main(int argc, char **argv) {
 
   char metadata_path[4096];
   char heightmap_path[4096];
+  char water_path[4096];
   snprintf(metadata_path, sizeof(metadata_path), "%s.wot", argv[2]);
   snprintf(heightmap_path, sizeof(heightmap_path), "%s.whm", argv[2]);
+  snprintf(water_path, sizeof(water_path), "%s.wwt", argv[2]);
 
   if (read_tile(bytes, size) != 0 ||
       write_metadata(metadata_path, tile_x, tile_y) != 0 ||
-      write_heightmap(heightmap_path) != 0)
+      write_heightmap(heightmap_path) != 0 || write_water(water_path) != 0)
     return 1;
 
   for (int i = 0; i < texture_count; i++)
