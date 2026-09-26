@@ -6,7 +6,7 @@
 #include <string.h>
 #include <sys/stat.h>
 
-#define WWB_MAGIC 0x31425757
+#define WWB_MAGIC 0x32425757
 #define WMO_VERSION 17
 
 //a group's chunk header, then the group header inside it: the flags and the
@@ -42,6 +42,8 @@ typedef struct Batch {
 
 typedef struct Group {
   uint32_t flags;
+  float box_low[3];
+  float box_high[3];
   uint32_t vertex_count;
   uint32_t index_count;
   uint32_t batch_count;
@@ -362,12 +364,11 @@ static int read_group(const char *path, Group *group) {
       const uint8_t *header = bytes + offset + SUBCHUNK_HEADER;
       group->flags = read_u32(header + MOGP_FLAGS);
 
-      float low[3], high[3];
       for (int i = 0; i < 3; i++) {
-        low[i] = read_f32(header + MOGP_BOX + i * 4);
-        high[i] = read_f32(header + MOGP_BOX + 12 + i * 4);
+        group->box_low[i] = read_f32(header + MOGP_BOX + i * 4);
+        group->box_high[i] = read_f32(header + MOGP_BOX + 12 + i * 4);
       }
-      grow_box(low, high);
+      grow_box(group->box_low, group->box_high);
 
       int result = read_group_chunks(
           bytes, offset + SUBCHUNK_HEADER + MOGP_HEADER_SIZE,
@@ -403,6 +404,8 @@ static void write_u32(FILE *file, uint32_t value) {
 
 static void write_group(FILE *file, const Group *group) {
   write_u32(file, group->flags);
+  fwrite(group->box_low, sizeof(float), 3, file);
+  fwrite(group->box_high, sizeof(float), 3, file);
   write_u32(file, group->vertex_count);
   write_u32(file, group->index_count);
   write_u32(file, group->batch_count);
