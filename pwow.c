@@ -1,26 +1,35 @@
 #include <engine/engine.h>
-#include <engine/terrain/terrain_draw.h>
+#include <engine/terrain/terrain_world.h>
 #include <engine/time.h>
 #include <engine/window_manager.h>
 
-#define TILE_PATH "data/azeroth_31_49"
-#define TEXTURE_DIRECTORY "data"
+#define DATA_DIRECTORY "data"
+#define MAP "azeroth"
 
-//the renderer clears to black, so that is what distant ground has to fade into
-#define FOG_COLOR 0.0f, 0.0f, 0.0f, 1.0f
+//Goldshire, and the tiles around it
+#define CENTRE_TILE_X 31
+#define CENTRE_TILE_Y 49
+#define TILES_AROUND_CENTRE 1
+
+//the middle of the centre tile: the tile size times how far it is from tile
+//32, the middle of the map, plus half a tile. the ground there is at 67
+#define START_X (-17.5f * PE_TERRAIN_TILE_SIZE)
+#define START_Y (0.5f * PE_TERRAIN_TILE_SIZE)
+#define START_Z 150.0f
+
+//the ground fades into the horizon colour and the sky climbs from it to the
+//zenith, so the fog and the horizon have to be the same
+#define HORIZON_COLOR 0.62f, 0.72f, 0.85f, 1.0f
+#define ZENITH_COLOR 0.20f, 0.42f, 0.85f, 1.0f
+#define FOG_START 500.0f
+#define FOG_END 1400.0f
 
 #define MOVE_SPEED 60.0f
 #define FAST_MOVE_FACTOR 4.0f
 #define TURN_SPEED 1.5f
 #define PITCH_LIMIT 1.4f
-#define START_HEIGHT_ABOVE_GROUND 80.0f
 
-static PTerrainTile tile;
-static PTerrainMesh mesh;
-static PTerrainGpuMesh gpu_mesh;
-static PTerrainPipeline pipeline;
-static PTerrainFrames frames;
-static PTerrainMaterials materials;
+static PTerrainWorld world;
 
 static float yaw = GLM_PI;
 static float pitch = -0.35f;
@@ -32,16 +41,9 @@ static void update_camera_direction() {
   camera_update(&main_camera);
 }
 
-static void place_camera_above_tile_centre() {
-  //the first vertex of the chunk in the middle of the tile is the tile's centre
-  const int middle_chunk = 8 * PE_TERRAIN_CHUNKS_PER_SIDE + 8;
-  const float *ground =
-      mesh.vertices[middle_chunk * PE_TERRAIN_CHUNK_VERTICES].position;
-
+static void place_camera() {
   camera_init(&main_camera);
-  glm_vec3_copy(
-      (vec3){ground[0], ground[1], ground[2] + START_HEIGHT_ABOVE_GROUND},
-      main_camera.position);
+  glm_vec3_copy((vec3){START_X, START_Y, START_Z}, main_camera.position);
   update_camera_direction();
 }
 
@@ -49,8 +51,9 @@ static void fill_lighting(PTerrainFrame *frame) {
   glm_vec4_copy((vec4){-0.4f, -0.3f, -0.8f, 0}, frame->light_direction);
   glm_vec4_copy((vec4){0.9f, 0.85f, 0.75f, 1}, frame->light_color);
   glm_vec4_copy((vec4){0.35f, 0.38f, 0.45f, 1}, frame->ambient_color);
-  glm_vec4_copy((vec4){FOG_COLOR}, frame->fog_color);
-  glm_vec4_copy((vec4){300, 900, 0, 0}, frame->fog_range);
+  glm_vec4_copy((vec4){HORIZON_COLOR}, frame->fog_color);
+  glm_vec4_copy((vec4){ZENITH_COLOR}, frame->sky_zenith);
+  glm_vec4_copy((vec4){FOG_START, FOG_END, 0, 0}, frame->fog_range);
 }
 
 static void pwow_draw_scene(PRenderTarget *target, VkCommandBuffer *command,
@@ -59,34 +62,22 @@ static void pwow_draw_scene(PRenderTarget *target, VkCommandBuffer *command,
   ZERO(frame);
   pe_terrain_frame_set_camera(&frame, &main_camera);
   fill_lighting(&frame);
-  pe_vk_terrain_frame_update(&frames, image_index, &frame);
 
-  PTerrainDrawInfo draw = {.pipeline = &pipeline,
-                           .frames = &frames,
-                           .mesh = &gpu_mesh,
-                           .materials = &materials,
-                           .frame = &frame,
-                           .command_buffer = *command,
-                           .image_index = image_index};
-  pe_vk_terrain_draw(&draw);
+  pe_vk_terrain_world_draw(&world, &frame, *command, image_index);
 }
 
 static void pwow_init() {
-  if (pe_terrain_load(TILE_PATH, &tile) == false) {
-    LOG("pwow: can't load %s, run ./prepare_tile.sh azeroth 31 49\n",
-        TILE_PATH);
+  pe_vk_terrain_world_create(&world);
+
+  if (pe_vk_terrain_world_load_area(&world, DATA_DIRECTORY, MAP, CENTRE_TILE_X,
+                                    CENTRE_TILE_Y, TILES_AROUND_CENTRE) ==
+      false) {
+    LOG("pwow: no tiles in %s, run ./prepare_tile.sh %s %d %d %d\n",
+        DATA_DIRECTORY, MAP, CENTRE_TILE_X, CENTRE_TILE_Y, TILES_AROUND_CENTRE);
     exit(1);
   }
 
-  pe_terrain_mesh_build(&tile, &mesh);
-  pe_vk_terrain_mesh_upload(&mesh, &gpu_mesh);
-  pe_vk_terrain_pipeline_create(&pipeline);
-  pe_vk_terrain_frames_create(&pipeline, &frames);
-  pe_vk_terrain_materials_create(&pipeline, &tile, TEXTURE_DIRECTORY,
-                                 &materials);
-
-  place_camera_above_tile_centre();
-
+  place_camera();
   pe_vk_draw_scene = &pwow_draw_scene;
 }
 
