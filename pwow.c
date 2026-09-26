@@ -12,9 +12,10 @@
 #define TILES_AROUND_CENTRE 1
 
 //the middle of the centre tile: the tile size times how far it is from tile
-//32, the middle of the map, plus half a tile. the ground there is at 67
+//32, the middle of the map, plus half a tile, with east as +Y. the ground
+//there is at 67
 #define START_X (-17.5f * PE_TERRAIN_TILE_SIZE)
-#define START_Y (0.5f * PE_TERRAIN_TILE_SIZE)
+#define START_Y (-0.5f * PE_TERRAIN_TILE_SIZE)
 #define START_Z 150.0f
 
 //the ground fades into the horizon colour and the sky climbs from it to the
@@ -57,7 +58,7 @@ static void place_camera() {
 }
 
 static void fill_lighting(PTerrainFrame *frame) {
-  glm_vec4_copy((vec4){-0.4f, -0.3f, -0.8f, 0}, frame->light_direction);
+  glm_vec4_copy((vec4){-0.4f, 0.3f, -0.8f, 0}, frame->light_direction);
   glm_vec4_copy((vec4){0.9f, 0.85f, 0.75f, 1}, frame->light_color);
   glm_vec4_copy((vec4){0.35f, 0.38f, 0.45f, 1}, frame->ambient_color);
   glm_vec4_copy((vec4){HORIZON_COLOR}, frame->fog_color);

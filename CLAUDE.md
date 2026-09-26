@@ -59,7 +59,7 @@ Update and draw both run on the main thread, so the camera is not raced.
 
 Conventions specific to this program:
 
-- World units are yards; a tile is `PE_TERRAIN_TILE_SIZE` (1600/3). Tile (32, 32) is the middle of the map, and rows run toward -X and columns toward -Y, so the start position is `(32 - tile_y - 0.5) * size, (32 - tile_x - 0.5) * size`.
+- World units are yards; a tile is `PE_TERRAIN_TILE_SIZE` (1600/3). Tile (32, 32) is the middle of the map. **The world is X north, Y east, Z up**, which is left handed to match the engine's camera. The game stores it as X north, Y *west*, right handed, and drawn like that everything is its own mirror image (facing north, west on the right); the module negates Y once, in `pe_terrain_point_y`. Rows run toward -X (south) and columns toward +Y (east), so the start position is `(32 - tile_y - 0.5) * size, -(32 - tile_x - 0.5) * size`. Anything read from the game data that carries a position must go through that flip; the sun direction in `pwow.c` is in these axes too.
 - **The fog colour and the sky's horizon colour must be the same** (`HORIZON_COLOR`), or the far ground shows as a band against the sky. `FOG_END` also acts as the view distance: chunks entirely past it are not drawn.
 - The engine's `transparency` flag in `PCreateShaderInfo` sets blend factors but never enables blending, so it does nothing. The water pipeline passes its own colour-blend state instead.
 - The renderer's render pass clears to black on purpose, and `pe_change_background_color()` does nothing on the Vulkan path. Do not use it to set a sky.
