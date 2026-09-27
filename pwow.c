@@ -34,6 +34,15 @@
 #define WALK_SPEED 7.0f
 #define WALK_FAST_FACTOR 3.0f
 #define GROUND_FOLLOW_RATE 12.0f
+//the walker's body against buildings: how far out from its middle it reaches, how
+//high a step it goes up without being stopped, and the heights above its feet of
+//the two spheres that stand in for it, the knee above a step and the head
+#define BODY_RADIUS 0.4f
+#define STEP_HEIGHT 0.6f
+#define BODY_SPHERE_LOW 1.0f
+#define BODY_SPHERE_HIGH 1.6f
+#define WALL_PUSH_PASSES 3
+
 #define TURN_SPEED 1.5f
 #define PITCH_LIMIT 1.4f
 
@@ -130,15 +139,51 @@ static void move_camera(float distance) {
   glm_vec3_muladds(direction, distance, main_camera.position);
 }
 
-//where there is no ground under the camera, over a hole or past the loaded
-//tiles, it stays as high as it was
+//a wall pushes the body out of it, sideways only, and a corner needs more than
+//one push
+static void keep_out_of_walls() {
+  const float heights[] = {BODY_SPHERE_LOW, BODY_SPHERE_HIGH};
+  vec3 feet = {main_camera.position[0], main_camera.position[1],
+               main_camera.position[2] - EYE_HEIGHT};
+
+  for (int pass = 0; pass < WALL_PUSH_PASSES; pass++) {
+    bool moved = false;
+
+    for (int i = 0; i < 2; i++) {
+      vec3 centre = {feet[0], feet[1], feet[2] + heights[i]};
+      vec3 before;
+      glm_vec3_copy(centre, before);
+
+      if (pe_terrain_world_push_out(&world, centre, BODY_RADIUS) == false)
+        continue;
+
+      feet[0] += centre[0] - before[0];
+      feet[1] += centre[1] - before[1];
+      moved = true;
+    }
+    if (moved == false)
+      break;
+  }
+
+  main_camera.position[0] = feet[0];
+  main_camera.position[1] = feet[1];
+}
+
+//the floor is the ground or the highest floor of a building that is no more than
+//a step above the feet, so a roof or an upper floor overhead is not stood on.
+//where there is none under the camera, over a hole or past the loaded tiles, it
+//stays as high as it was
 static void follow_ground(float seconds) {
-  float ground;
-  if (pe_terrain_world_height_at(&world, main_camera.position[0],
-                                 main_camera.position[1], &ground) == false)
+  keep_out_of_walls();
+
+  float floor;
+  float feet = main_camera.position[2] - EYE_HEIGHT;
+  if (pe_terrain_world_floor_at(&world, main_camera.position[0],
+                                main_camera.position[1], feet + STEP_HEIGHT,
+                                &floor) == false)
     return;
 
-  float target = ground + EYE_HEIGHT;
+  float target = floor + EYE_HEIGHT;
   main_camera.position[2] +=
       (target - main_camera.position[2]) *
       (1 - expf(-GROUND_FOLLOW_RATE * seconds));
