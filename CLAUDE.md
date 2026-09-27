@@ -13,11 +13,13 @@ The repo is local only (no remote). Changes to the engine are committed and push
 ```
 make -C /root/pengine -j24     # the engine first: builds lib/libpengine.a and the .spv shaders
 make                           # here: builds ./pwow and ./adt2wot
-./prepare_tile.sh azeroth 31 49 2   # once: convert the 5x5 block around Goldshire into data/
+./prepare_tile.sh kalimdor 36 32 2   # once: convert the 5x5 block around the Crossroads into data/
 ./pwow                              # run from this directory, it loads data/ by relative path
-./prepare_tile.sh kalimdor 36 32 2  # the Barrens, around the Crossroads
-./pwow kalimdor 36 32               # start over the middle of a tile of another map
+./prepare_tile.sh azeroth 31 49 2   # Goldshire, around its inn
+./pwow azeroth 31 49                # start over the middle of a tile of any map
 ```
+
+With no arguments it starts 40 yards over the Crossroads, in the Barrens (tile 36, 32, at X -437, Y 2596), looking south. With a map and a tile it starts 40 yards over the middle of that tile: the middle of Goldshire's tile is not the inn, and a big tree there can be taller than that.
 
 The world streams: tiles within `STREAM_DISTANCE` (900 yards) of the camera are loaded and the rest given back, so walk or fly as far as the converted `data/` reaches. Convert a wide block if you mean to travel: a tile that is not in `data/` is simply not there, and the edge of the block is the edge of the world.
 

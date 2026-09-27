@@ -5,24 +5,20 @@
 
 #define DATA_DIRECTORY "data"
 
-//with no arguments it starts at Goldshire. ./pwow <map> <tile x> <tile y> starts
-//over the ground of another tile, which prepare_tile.sh has to have converted
-#define DEFAULT_MAP "azeroth"
-#define DEFAULT_TILE_X 31
-#define DEFAULT_TILE_Y 49
+//with no arguments it starts over the Crossroads, in the Barrens. ./pwow <map>
+//<tile x> <tile y> starts over the middle of another tile, which prepare_tile.sh
+//has to have converted. the Crossroads stand at X -437, Y 2596, in tile 36, 32
+#define DEFAULT_MAP "kalimdor"
+#define DEFAULT_TILE_X 36
+#define DEFAULT_TILE_Y 32
+#define DEFAULT_START_X -437.0f
+#define DEFAULT_START_Y 2596.0f
 
 //how far from the camera the tiles are kept loaded, in yards, and how high over
 //the ground of a tile, in yards, a camera that starts over one is. the fog hides
 //the ground from 500 to 1400, so tiles are kept as far as two tiles allow
 #define STREAM_DISTANCE 900.0f
 #define START_HEIGHT_OVER_GROUND 40.0f
-
-//in front of the Goldshire inn, sixty yards north of it and looking south. the
-//inn stands at X -9464, Y -24, on ground at 56. the trees along the road reach
-//past 80, so the camera is kept low, under the canopy
-#define START_X -9404.0f
-#define START_Y -24.0f
-#define START_Z 66.0f
 
 //the ground fades into the horizon colour and the sky climbs from it to the
 //zenith, so the fog and the horizon have to be the same
@@ -57,7 +53,8 @@ static PTerrainWorld world;
 static const char *map = DEFAULT_MAP;
 static int start_tile_x = DEFAULT_TILE_X;
 static int start_tile_y = DEFAULT_TILE_Y;
-static bool start_at_inn = true;
+static float start_x = DEFAULT_START_X;
+static float start_y = DEFAULT_START_Y;
 
 static bool walking;
 
@@ -84,12 +81,10 @@ static void fill_world_around(const vec3 position) {
     ;
 }
 
-//the middle of the tile, over its ground once that is loaded
-static void start_over_tile(vec3 position) {
-  position[0] = (PE_TERRAIN_MAP_CENTRE_TILE - start_tile_y - 0.5f) *
-                PE_TERRAIN_TILE_SIZE;
-  position[1] = (start_tile_x - PE_TERRAIN_MAP_CENTRE_TILE + 0.5f) *
-                PE_TERRAIN_TILE_SIZE;
+//over the start, once the ground there is loaded
+static void start_over_ground(vec3 position) {
+  position[0] = start_x;
+  position[1] = start_y;
   position[2] = 0;
 
   fill_world_around(position);
@@ -127,11 +122,8 @@ static void pwow_draw_scene(PRenderTarget *target, VkCommandBuffer *command,
 static void pwow_init() {
   pe_vk_terrain_world_create(&world);
 
-  vec3 position = {START_X, START_Y, START_Z};
-  if (start_at_inn)
-    fill_world_around(position);
-  else
-    start_over_tile(position);
+  vec3 position;
+  start_over_ground(position);
 
   if (world.tile_count == 0) {
     LOG("pwow: no tiles in %s, run ./prepare_tile.sh %s %d %d 2\n",
@@ -278,7 +270,10 @@ static void read_start_tile(char **arguments) {
   map = arguments[0];
   start_tile_x = atoi(arguments[1]);
   start_tile_y = atoi(arguments[2]);
-  start_at_inn = false;
+  start_x = (PE_TERRAIN_MAP_CENTRE_TILE - start_tile_y - 0.5f) *
+            PE_TERRAIN_TILE_SIZE;
+  start_y = (start_tile_x - PE_TERRAIN_MAP_CENTRE_TILE + 0.5f) *
+            PE_TERRAIN_TILE_SIZE;
 }
 
 int main(int argc, char **argv) {
