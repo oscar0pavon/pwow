@@ -13,9 +13,13 @@ The repo is local only (no remote). Changes to the engine are committed and push
 ```
 make -C /root/pengine -j24     # the engine first: builds lib/libpengine.a and the .spv shaders
 make                           # here: builds ./pwow and ./adt2wot
-./prepare_tile.sh azeroth 31 49 1   # once: convert the 3x3 block around Goldshire into data/
+./prepare_tile.sh azeroth 31 49 2   # once: convert the 5x5 block around Goldshire into data/
 ./pwow                              # run from this directory, it loads data/ by relative path
+./prepare_tile.sh kalimdor 36 32 2  # the Barrens, around the Crossroads
+./pwow kalimdor 36 32               # start over the middle of a tile of another map
 ```
+
+The world streams: tiles within `STREAM_DISTANCE` (900 yards) of the camera are loaded and the rest given back, so walk or fly as far as the converted `data/` reaches. Convert a wide block if you mean to travel: a tile that is not in `data/` is simply not there, and the edge of the block is the edge of the world.
 
 - `Makefile` has `WORKDIR := /root/pengine` hardcoded and includes pengine's `include.make`. The compile flags matter to a consumer, not just the engine: `-fcommon` and the `CGLM_FORCE_*` defines change struct layout and projection maths.
 - pengine is a **static library**, and `make` here only compares `pwow.c` against `libpengine.a`'s timestamp. After any engine change, rebuild the engine and then `make -B` here, or a stale binary is what you run.
@@ -33,14 +37,14 @@ world/wmo/**/name.wmo + name_NNN.wmo ──wmo2wwb──▶ data/world/wmo/**/na
 world/**/name.m2 (the props, and those inside buildings) ──m22wwb──▶ data/world/**/name.wwb + name.wwc
 *.blp (tile, building and prop textures) ──blp_convert──▶ data/**/*.png
                                             │
-              pe_vk_terrain_world_load_area() ◀┘  (pengine)
+              pe_vk_terrain_world_stream() ◀┘  (pengine)
 ```
 
 `tools/adt2wot.c` is a standalone offline converter (no engine dependency) from Blizzard's ADT to WoWee's open `.wot` (JSON: tile coords, texture names, per-chunk layer ids and hole masks) and `.whm` (binary: 256 chunks of 145 heights plus alpha maps), plus a `.wwt` of its own for the water. It prints the PNG path of each texture the tile uses, which is how `prepare_tile.sh` knows what to convert.
 
 The `.wot` also carries the tile's buildings in WoWee's own `wmoNames` / `wmos` fields: each placement's raw ADT position, rotation in degrees, unique id, and the world box Blizzard stored for it. `adt2wot` prints `texture <png>` and `building <wmo path>` lines, which `prepare_tile.sh` acts on. `tools/wmo2wwb.c` converts one building, its root file and its `_NNN` group files, to a `.wwb`; a building with more than 64 groups is refused with exit code 3, which is how Stormwind (the whole city, 306 groups) is skipped. The engine logs the missing `.wwb` once and leaves those placements out.
 
-The props, the trees and fences and barrels and grass, are the tile's MDDF placements (`doodadNames` / `doodads` in the `.wot`, 36-byte records: raw position, rotation, scale with 1024 for life size) and are models of the game's own `.m2` format. A Goldshire tile places 200 to 1500 of them, 7500 in the 3x3 block, of about 200 kinds. `tools/m22wwb.c` reads a classic model (version 256, whose views are inside the file and not in `.skin` files) and writes a `.wwb` of one group, so the building renderer draws it unchanged. What it keeps: the first view, and the batches whose blend is 0 opaque, 1 alpha-key, 2 alpha or 3 additive, the game's own numbers; a batch that multiplies (4 and up) is dropped, and so is a solid batch above the base layer, which would only cover the base. Vertex colours are white, since a model carries no baked light. A model is walked into by the few triangles the game gives it for that, the `boundingTriangles` and `boundingVertices` of its header (at `0xEC` and `0xF4` in a classic one), which `m22wwb` writes to `name.wwc` (`WWC1`: a count of positions, a count of indices, the positions as three floats, the indices as words); 297 of the 485 props here have one, a trunk of 12 triangles or a fence of 28, and a bush has none and no file. A prop converted before the `.wwc` existed is walked through, and `prepare_tile.sh` will not do it again since it has its `.wwb`: delete the props' `.wwb` and the buildings' `.wwd` and run it. A model with nothing left to draw (`fireflies01.m2`) is refused with exit code 3, and the engine logs its missing `.wwb` once. The map files name a model `.mdx` and the file is `.m2`, so `adt2wot` writes `.m2`.
+The props, the trees and fences and barrels and grass, are the tile's MDDF placements (`doodadNames` / `doodads` in the `.wot`, 36-byte records: raw position, rotation, scale with 1024 for life size) and are models of the game's own `.m2` format. A Goldshire tile places 200 to 1500 of them, 7500 in the 3x3 block, of about 200 kinds. `tools/m22wwb.c` reads a classic model (version 256, whose views are inside the file and not in `.skin` files) and writes a `.wwb` of one group, so the building renderer draws it unchanged. What it keeps: the first view, and the batches whose blend is 0 opaque, 1 alpha-key, 2 alpha or 3 additive, the game's own numbers; a batch that multiplies (4 and up) is dropped, and so is a solid batch above the base layer, which would only cover the base. Vertex colours are white, since a model carries no baked light. A model is walked into by the few triangles the game gives it for that, the `boundingTriangles` and `boundingVertices` of its header (at `0xEC` and `0xF4` in a classic one), which `m22wwb` writes to `name.wwc` (`WWC1`: a count of positions, a count of indices, the positions as three floats, the indices as words); 297 of the 485 props here have one, a trunk of 12 triangles or a fence of 28, and a bush has none and no file. A prop converted before the `.wwc` existed is walked through, and `prepare_tile.sh` will not do it again since it has its `.wwb`: delete the props' `.wwb` and the buildings' `.wwd` and run it. A model with nothing left to draw (`fireflies01.m2`), or with no view at all (the particle emitters and smokes of the Barrens), is refused with exit code 3, and the engine logs its missing `.wwb` once. The map files name a model `.mdx` and the file is `.m2`, so `adt2wot` writes `.m2`.
 
 A building also holds props inside it: its tables, lamps, barrels, rugs and chandeliers, 67 kinds in the Goldshire inn. They are in its root `.wmo`, not in the map: MODD lists them (40 bytes each: a name that is a byte offset into MODN, position, a quaternion x y z w, scale) and MODS groups them into sets. `wmo2wwb` writes them to `name.wwd` (`WWD1`: model paths as `.wwb`, sets as first and count, props as model, position, quaternion, scale), always, empty for a building with none, and prints a `prop <m2>` line for each model, which `prepare_tile.sh` converts. A placement draws set 0 and the set named by its `doodadSet`. The prop's matrix is the building's own placement matrix times the prop's place in the building (translate, quaternion, scale), in the building's axes with no reflection; taken as written, the chairs stand upright around their table and the chandeliers hang. A building converted before the `.wwd` existed has none, so `prepare_tile.sh` converts it again when the `.wwd` is missing.
 
@@ -71,11 +75,22 @@ Things that were checked against real data and are easy to get wrong:
 
 `pwow.c` fills a `PGame` and calls `pengine_run()`. Then:
 
-1. `init` builds the world: `pe_vk_terrain_world_create()`, then `pe_vk_terrain_world_load_area()` for a square of tiles around a centre. Meshes, materials and the shared texture cache are created here, on the GPU, once. There is no unloading yet.
-2. `update` moves the camera from `input.<KEY>.pressed`, scaled by `delta_time` (seconds).
+1. `init` builds the world: `pe_vk_terrain_world_create()`, then `pe_vk_terrain_world_stream()` called until it has nothing left to load around the start position.
+2. `update` moves the camera from `input.<KEY>.pressed`, scaled by `delta_time` (seconds), then calls `pe_vk_terrain_world_stream()` once, which loads at most one tile.
 3. The engine calls the `pe_vk_draw_scene` hook every frame. `pwow_draw_scene` fills a `PTerrainFrame` (camera via `pe_terrain_frame_set_camera()`, which also stamps the time the water animates by, then lighting, fog and sky colours) and hands it to `pe_vk_terrain_world_draw()`, which uploads it, draws the sky, the ground of every tile, the buildings and props, and last the water, which blends over everything.
 
 Update and draw both run on the main thread, so the camera is not raced.
+
+Streaming, in pengine (`terrain_world.c`), worked out against the Barrens with a scripted camera flying five tiles out and back:
+
+- A tile is wanted while the camera is within the distance of its rectangle, and kept until it is `PE_TERRAIN_STREAM_MARGIN` (100 yards) farther, so a border crossed back and forth does not load and unload the same tiles. The distance plus the margin has to stay under two tiles (1066 yards), or more than the 5x5 slots can be wanted.
+- Loading is on the main thread, one tile a call, nearest first, and it is the hitch: a tile costs 20 to 60 ms once its buildings and textures are known, and 100 to 480 ms when it brings new kinds of prop and their textures (the first tile at the Crossroads took 485 ms, 430 of them in `pe_vk_terrain_buildings_add_tile`). A loader thread would need the file reads and the mesh building off the main thread, and the Vulkan uploads left on it.
+- A tile's mesh is built with the eight tiles around it read from disk again each time, loaded or not, so the border normals of a tile do not depend on the order the tiles came in.
+- Unloading waits for the gpu to be idle (`vkDeviceWaitIdle`, once per call), then gives back the tile's buffers, alpha atlas and descriptor pool, and takes away the buildings and props it placed.
+- A building on a border is listed by every tile it touches and is added once, by the first, with each tile that lists it recorded as an owner (up to four); it stands until the last owner is unloaded. A prop inside a building carries the building's unique id and owners. Instance counts come back exactly the same on the way back over a tile (7147 at the start and at the return), which is how that was checked.
+- A kind of building or prop is loaded when the first placement of it stands and given back when the last is gone, with its descriptor sets (the pool is made with `FREE_DESCRIPTOR_SET_BIT`), buffers and collision. One that could not be loaded is kept, holding nothing, so it is not tried again by every tile.
+- Textures are counted by what uses them and are kept after the last user lets go, in a cache of 2048, and the one unused for longest is given back only when the cache is full. Around a Barrens tile the live set is 220 textures for 5 tiles and 620 for 21; a cache too small for what is live logs `no room for texture` and shows the magenta checker, which was tried with caches of 400 and 620.
+- `pe_vk_destroy_buffer()` takes a buffer out of the list `pe_vk_end()` destroys at exit, or it would be destroyed twice.
 
 Conventions specific to this program:
 

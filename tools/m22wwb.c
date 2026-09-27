@@ -328,8 +328,10 @@ static int read_model(void) {
   if (read_array(HEADER_VIEWS, VIEW_SIZE, &view_count, &views) != 0 ||
       read_array(HEADER_VERTICES, VERTEX_SIZE, &vertex_count, &vertices) != 0)
     return 1;
-  if (view_count == 0 || vertex_count == 0)
-    return fail("the model has no view or no vertices");
+  if (view_count == 0 || vertex_count == 0) {
+    fprintf(stderr, "m22wwb: skipped: the model has no view or no vertices\n");
+    return EXIT_NOTHING_TO_DRAW;
+  }
 
   uint32_t lookup_count, triangle_count, submesh_count, batch_records;
   const uint8_t *lookup, *triangles, *submeshes, *batch_table;
@@ -534,8 +536,9 @@ int main(int argc, char **argv) {
   if (model == NULL)
     return fail("can't read the model");
 
-  if (read_model() != 0)
-    return 1;
+  int status = read_model();
+  if (status != 0)
+    return status;
 
   if (batch_count == 0) {
     fprintf(stderr, "m22wwb: skipped %s: nothing in it is drawn\n", model_path);

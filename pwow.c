@@ -4,12 +4,18 @@
 #include <engine/window_manager.h>
 
 #define DATA_DIRECTORY "data"
-#define MAP "azeroth"
 
-//Goldshire, and the tiles around it
-#define CENTRE_TILE_X 31
-#define CENTRE_TILE_Y 49
-#define TILES_AROUND_CENTRE 1
+//with no arguments it starts at Goldshire. ./pwow <map> <tile x> <tile y> starts
+//over the ground of another tile, which prepare_tile.sh has to have converted
+#define DEFAULT_MAP "azeroth"
+#define DEFAULT_TILE_X 31
+#define DEFAULT_TILE_Y 49
+
+//how far from the camera the tiles are kept loaded, in yards, and how high over
+//the ground of a tile, in yards, a camera that starts over one is. the fog hides
+//the ground from 500 to 1400, so tiles are kept as far as two tiles allow
+#define STREAM_DISTANCE 900.0f
+#define START_HEIGHT_OVER_GROUND 40.0f
 
 //in front of the Goldshire inn, sixty yards north of it and looking south. the
 //inn stands at X -9464, Y -24, on ground at 56. the trees along the road reach
@@ -48,6 +54,11 @@
 
 static PTerrainWorld world;
 
+static const char *map = DEFAULT_MAP;
+static int start_tile_x = DEFAULT_TILE_X;
+static int start_tile_y = DEFAULT_TILE_Y;
+static bool start_at_inn = true;
+
 static bool walking;
 
 static float yaw = GLM_PI;
@@ -60,9 +71,37 @@ static void update_camera_direction() {
   camera_update(&main_camera);
 }
 
-static void place_camera() {
+static void stream_world() {
+  pe_vk_terrain_world_stream(&world, DATA_DIRECTORY, map,
+                             main_camera.position[0], main_camera.position[1],
+                             STREAM_DISTANCE);
+}
+
+static void fill_world_around(const vec3 position) {
+  glm_vec3_copy((float *)position, main_camera.position);
+  while (pe_vk_terrain_world_stream(&world, DATA_DIRECTORY, map, position[0],
+                                    position[1], STREAM_DISTANCE))
+    ;
+}
+
+//the middle of the tile, over its ground once that is loaded
+static void start_over_tile(vec3 position) {
+  position[0] = (PE_TERRAIN_MAP_CENTRE_TILE - start_tile_y - 0.5f) *
+                PE_TERRAIN_TILE_SIZE;
+  position[1] = (start_tile_x - PE_TERRAIN_MAP_CENTRE_TILE + 0.5f) *
+                PE_TERRAIN_TILE_SIZE;
+  position[2] = 0;
+
+  fill_world_around(position);
+
+  float ground = 0;
+  pe_terrain_world_height_at(&world, position[0], position[1], &ground);
+  position[2] = ground + START_HEIGHT_OVER_GROUND;
+}
+
+static void place_camera(const vec3 position) {
   camera_init(&main_camera);
-  glm_vec3_copy((vec3){START_X, START_Y, START_Z}, main_camera.position);
+  glm_vec3_copy((float *)position, main_camera.position);
   update_camera_direction();
 }
 
@@ -88,15 +127,19 @@ static void pwow_draw_scene(PRenderTarget *target, VkCommandBuffer *command,
 static void pwow_init() {
   pe_vk_terrain_world_create(&world);
 
-  if (pe_vk_terrain_world_load_area(&world, DATA_DIRECTORY, MAP, CENTRE_TILE_X,
-                                    CENTRE_TILE_Y, TILES_AROUND_CENTRE) ==
-      false) {
-    LOG("pwow: no tiles in %s, run ./prepare_tile.sh %s %d %d %d\n",
-        DATA_DIRECTORY, MAP, CENTRE_TILE_X, CENTRE_TILE_Y, TILES_AROUND_CENTRE);
+  vec3 position = {START_X, START_Y, START_Z};
+  if (start_at_inn)
+    fill_world_around(position);
+  else
+    start_over_tile(position);
+
+  if (world.tile_count == 0) {
+    LOG("pwow: no tiles in %s, run ./prepare_tile.sh %s %d %d 2\n",
+        DATA_DIRECTORY, map, start_tile_x, start_tile_y);
     exit(1);
   }
 
-  place_camera();
+  place_camera(position);
   pe_vk_draw_scene = &pwow_draw_scene;
 }
 
@@ -216,6 +259,7 @@ static void pwow_update() {
   turn_camera(TURN_SPEED * delta_time);
   update_camera_direction();
   move_camera(movement_speed() * delta_time);
+  stream_world();
 
   if (walking)
     follow_ground(delta_time);
@@ -230,7 +274,21 @@ static void pwow_input() {
     exit(0);
 }
 
-int main() {
+static void read_start_tile(char **arguments) {
+  map = arguments[0];
+  start_tile_x = atoi(arguments[1]);
+  start_tile_y = atoi(arguments[2]);
+  start_at_inn = false;
+}
+
+int main(int argc, char **argv) {
+  if (argc == 4)
+    read_start_tile(argv + 1);
+  else if (argc != 1) {
+    fprintf(stderr, "usage: %s [map tile_x tile_y]\n", argv[0]);
+    return 1;
+  }
+
   PGame game;
   ZERO(game);
   game.name = "pwow";
