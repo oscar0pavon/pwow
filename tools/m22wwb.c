@@ -49,16 +49,17 @@
 #define BATCH_TEXTURE_COMBO 16
 
 //a model draws over its submeshes in layers: the base, then whatever is
-//blended over it. this draws the base
+//blended over it. a layer above the base that is solid would only cover the
+//base, and is left out
 #define BASE_LAYER 0
 
-//how the game blends a batch. opaque and alpha-keyed are the two the building
-//pipeline draws, and true alpha is drawn as alpha-keyed, which is right for a
-//leaf or a petal cut from a quad. what adds to the picture or multiplies it is
-//a glow or a light shaft, and is left out
+//how the game blends a batch, and the ones the building pipeline draws: as it
+//is, cut out at half alpha, blended over what is behind it, and added to it.
+//what multiplies the picture, a shadow or a decal, is left out
 #define BLEND_OPAQUE 0
 #define BLEND_ALPHA_KEY 1
 #define BLEND_ALPHA 2
+#define BLEND_ADD 3
 
 #define GROUP_EXTERIOR 0x8
 
@@ -226,8 +227,8 @@ static int find_or_add_material(const Material *wanted, uint32_t *index) {
   return 0;
 }
 
-static int batch_material(const uint8_t *batch, uint32_t *material,
-                          int *drawn) {
+static int batch_material(const uint8_t *batch, uint32_t layer,
+                          uint32_t *material, int *drawn) {
   uint32_t flag_count, lookup_count;
   const uint8_t *flag_records, *lookup;
 
@@ -244,11 +245,13 @@ static int batch_material(const uint8_t *batch, uint32_t *material,
     return fail("a batch names a material or a texture that is not there");
 
   uint32_t blend = read_u16(flag_records + flags_index * RENDER_FLAGS_SIZE + 2);
-  if (blend > BLEND_ALPHA)
+  if (blend > BLEND_ADD)
+    return 0;
+  if (layer != BASE_LAYER && blend < BLEND_ALPHA)
     return 0;
 
   Material wanted = {
-      .blend = blend == BLEND_OPAQUE ? BLEND_OPAQUE : BLEND_ALPHA_KEY,
+      .blend = blend,
       .flags = read_u16(flag_records + flags_index * RENDER_FLAGS_SIZE)};
   if (model_texture(read_u16(lookup + combo * sizeof(uint16_t)),
                     &wanted.texture) != 0)
@@ -350,9 +353,8 @@ static int read_model(void) {
 
     if (submesh >= submesh_count)
       return fail("a batch names a submesh that is not there");
-    if (read_u16(batch + BATCH_LAYER) != BASE_LAYER)
-      continue;
-    if (batch_material(batch, &material, &drawn) != 0)
+    if (batch_material(batch, read_u16(batch + BATCH_LAYER), &material,
+                       &drawn) != 0)
       return 1;
     if (drawn == 0)
       continue;
