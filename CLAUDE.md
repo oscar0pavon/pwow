@@ -20,7 +20,7 @@ make                           # here: builds ./pwow and ./adt2wot
 - `Makefile` has `WORKDIR := /root/pengine` hardcoded and includes pengine's `include.make`. The compile flags matter to a consumer, not just the engine: `-fcommon` and the `CGLM_FORCE_*` defines change struct layout and projection maths.
 - pengine is a **static library**, and `make` here only compares `pwow.c` against `libpengine.a`'s timestamp. After any engine change, rebuild the engine and then `make -B` here, or a stale binary is what you run.
 - There are no tests and no lint target. "It builds" and "it renders correctly" are the only checks; see below for how to look at it.
-- `make` also builds `adt2wot` and `wmo2wwb`, the two converters in `tools/`, which `prepare_tile.sh` calls.
+- `make` also builds `adt2wot`, `wmo2wwb` and `m22wwb`, the converters in `tools/`, which `prepare_tile.sh` calls.
 - `prepare_tile.sh` reads the game data from `$GAME_DATA` (default `/root/sources/WoWee/Data/expansions/classic`) and converts BLP textures with `$BLP_CONVERT` (WoWee's `blp_convert`, default under `/root/sources/WoWee/build/bin`). It skips textures already converted and tiles the game does not have. `data/` is gitignored on purpose: the textures come from the user's install and are not ours to distribute.
 
 Controls: W A S D move, Space / C up and down (flying only), I K pitch, J L turn, Shift is faster, Tab toggles between flying and walking, Q quits. Walking follows the ground at a 2 yard eye height at 7 yards a second, using `pe_terrain_world_height_at()`; over a hole or past the loaded tiles it keeps its last height, and it does not know about water, so it wades under a lake.
@@ -30,7 +30,8 @@ Controls: W A S D move, Space / C up and down (flying only), I K pitch, J L turn
 ```
 world/maps/<map>/<map>_<x>_<y>.adt ──adt2wot──▶ data/<map>_<x>_<y>.wot + .whm + .wwt
 world/wmo/**/name.wmo + name_NNN.wmo ──wmo2wwb──▶ data/world/wmo/**/name.wwb
-*.blp (tile and building textures) ──blp_convert──▶ data/**/*.png
+world/**/name.m2 (the props) ──m22wwb──▶ data/world/**/name.wwb
+*.blp (tile, building and prop textures) ──blp_convert──▶ data/**/*.png
                                             │
               pe_vk_terrain_world_load_area() ◀┘  (pengine)
 ```
@@ -38,6 +39,8 @@ world/wmo/**/name.wmo + name_NNN.wmo ──wmo2wwb──▶ data/world/wmo/**/na
 `tools/adt2wot.c` is a standalone offline converter (no engine dependency) from Blizzard's ADT to WoWee's open `.wot` (JSON: tile coords, texture names, per-chunk layer ids and hole masks) and `.whm` (binary: 256 chunks of 145 heights plus alpha maps), plus a `.wwt` of its own for the water. It prints the PNG path of each texture the tile uses, which is how `prepare_tile.sh` knows what to convert.
 
 The `.wot` also carries the tile's buildings in WoWee's own `wmoNames` / `wmos` fields: each placement's raw ADT position, rotation in degrees, unique id, and the world box Blizzard stored for it. `adt2wot` prints `texture <png>` and `building <wmo path>` lines, which `prepare_tile.sh` acts on. `tools/wmo2wwb.c` converts one building, its root file and its `_NNN` group files, to a `.wwb`; a building with more than 64 groups is refused with exit code 3, which is how Stormwind (the whole city, 306 groups) is skipped. The engine logs the missing `.wwb` once and leaves those placements out.
+
+The props, the trees and fences and barrels and grass, are the tile's MDDF placements (`doodadNames` / `doodads` in the `.wot`, 36-byte records: raw position, rotation, scale with 1024 for life size) and are models of the game's own `.m2` format. A Goldshire tile places 200 to 1500 of them, 7500 in the 3x3 block, of about 200 kinds. `tools/m22wwb.c` reads a classic model (version 256, whose views are inside the file and not in `.skin` files) and writes a `.wwb` of one group, so the building renderer draws it unchanged. What it keeps: the first view, the batches on the base layer (`materialLayer` 0), and materials whose blend is opaque, alpha-key or alpha, the last drawn as alpha-key; a batch that adds or multiplies (glows, light shafts) is dropped. Vertex colours are white, since a model carries no baked light. A model with nothing left to draw (`fireflies01.m2`) is refused with exit code 3, and the engine logs its missing `.wwb` once. The map files name a model `.mdx` and the file is `.m2`, so `adt2wot` writes `.m2`.
 
 `.wwb` is ours too (`WWB2`): the box round all the groups, a texture path table, materials `{texture, blend, flags}`, then per group its flags, its own box, 36-byte vertices, u32 indices and batches `{first_index, index_count, material}`. The group flags and boxes are what decide which rooms are drawn. Bumping the magic means old `.wwb` files are refused, so delete `data/world/wmo/**/*.wwb` and rerun `prepare_tile.sh` after changing the format. WoWee's own building format merges materials per group and loses the batches, which is why it is not used.
 
@@ -56,6 +59,9 @@ Things that were checked against real data and are easy to get wrong:
 - The terrain is one-sided (back faces are culled), so a camera underground sees through it and catches the far slopes edge-on as long tan ribbons in the sky. A test camera at a fixed height will do this wherever the ground is higher; it is not a rendering fault.
 - About 7% of a building's indices are in no batch. They are collision-only triangles, absent from the game's own render batches too, and are what building collision would be made from.
 - Materials in these buildings use only blend modes 0 (opaque) and 1 (alpha-test, cut at 0.5); the ones for windows and leaves rely on the texture's own alpha. Vertex colours are baked light and are multiplied in.
+- A prop's placement is the building rule above, then the scale (`scale / 1024`, uniform, about the model's own origin). No stored box exists to check a prop against, so it was checked against the ground: of the 1243 props of tile (31, 49) that stand over ground, the height they are placed at is 0.00 yards from `pe_terrain_heights_at()` at the median, within 0.44 for 90% and within 4.3 for 99% (the rest stand on tables, roofs and docks). That checks the position and the flip. The rotation was judged by eye: fences follow the slope and posts stand upright.
+- Models are static here. A classic model has bones and animations, and this reads none of it: vertices are drawn as stored. The trees have one bone with no flags, so nothing is lost. A model with billboard bones, whose leaf cards the game turns to face the camera, is drawn with the cards as authored.
+- **The trees are big**, canopies 100 yards across and trunks over 30 high, and the old start position 85 yards up is now inside one. Long thin green streaks over the canopy seen from above are the edges of its large flat leaf planes, which is how the game models them.
 - The Goldshire block has 22 chunks with **hole masks**, and the inn stands in one of them. Rectangular black-looking gaps in the ground are legitimate holes (building and cave footprints), not rendering cracks.
 
 ## How the program is put together
@@ -64,7 +70,7 @@ Things that were checked against real data and are easy to get wrong:
 
 1. `init` builds the world: `pe_vk_terrain_world_create()`, then `pe_vk_terrain_world_load_area()` for a square of tiles around a centre. Meshes, materials and the shared texture cache are created here, on the GPU, once. There is no unloading yet.
 2. `update` moves the camera from `input.<KEY>.pressed`, scaled by `delta_time` (seconds).
-3. The engine calls the `pe_vk_draw_scene` hook every frame. `pwow_draw_scene` fills a `PTerrainFrame` (camera via `pe_terrain_frame_set_camera()`, which also stamps the time the water animates by, then lighting, fog and sky colours) and hands it to `pe_vk_terrain_world_draw()`, which uploads it, draws the sky, the ground of every tile, the buildings, and last the water, which blends over everything.
+3. The engine calls the `pe_vk_draw_scene` hook every frame. `pwow_draw_scene` fills a `PTerrainFrame` (camera via `pe_terrain_frame_set_camera()`, which also stamps the time the water animates by, then lighting, fog and sky colours) and hands it to `pe_vk_terrain_world_draw()`, which uploads it, draws the sky, the ground of every tile, the buildings and props, and last the water, which blends over everything.
 
 Update and draw both run on the main thread, so the camera is not raced.
 

@@ -20,6 +20,10 @@
 #define PLACEMENTS_MAX 256
 #define MODF_SIZE 64
 
+#define PROPS_MAX 512
+#define PROP_PLACEMENTS_MAX 8192
+#define MDDF_SIZE 36
+
 #define WHM_MAGIC 0x314D4857
 #define WWT_MAGIC 0x31545757
 
@@ -100,21 +104,57 @@ typedef struct Placement {
   uint16_t doodad_set;
 } Placement;
 
+//a prop is a small model standing about, a tree or a fence or a barrel. the
+//scale is the game's, 1024 for life size
+typedef struct PropPlacement {
+  uint32_t prop;
+  uint32_t unique_id;
+  float position[3];
+  float rotation[3];
+  uint16_t scale;
+  uint16_t flags;
+} PropPlacement;
+
 static Placement placements[PLACEMENTS_MAX];
 static int placement_count;
 
-//the buildings the tile places, as the game names them (lowercase, forward
-//slashes, .wmo) and as they are converted to (.wwb)
+static PropPlacement prop_placements[PROP_PLACEMENTS_MAX];
+static int prop_placement_count;
+
+//what a tile places is named in two blocks: the paths, back to back, and a
+//list of where each starts. a placement names one by its place in that list
+typedef struct NameTable {
+  const uint8_t *paths;
+  uint32_t paths_size;
+  const uint8_t *offsets;
+  uint32_t offset_count;
+} NameTable;
+
+//the buildings and props the tile places, as the game names them (lowercase,
+//forward slashes, .wmo or .m2) and as they are converted to (.wwb)
+typedef struct ModelList {
+  int capacity;
+  int count;
+  char (*sources)[BUILDING_PATH_MAX];
+  char (*files)[BUILDING_PATH_MAX];
+} ModelList;
+
 static char building_sources[BUILDINGS_MAX][BUILDING_PATH_MAX];
 static char building_files[BUILDINGS_MAX][BUILDING_PATH_MAX];
-static int building_count;
+static char prop_sources[PROPS_MAX][BUILDING_PATH_MAX];
+static char prop_files[PROPS_MAX][BUILDING_PATH_MAX];
 
-static const uint8_t *building_names;
-static uint32_t building_names_size;
-static const uint8_t *building_offsets;
-static uint32_t building_offset_count;
+static ModelList buildings = {BUILDINGS_MAX, 0, building_sources,
+                              building_files};
+static ModelList props = {PROPS_MAX, 0, prop_sources, prop_files};
+
+static NameTable building_names;
+static NameTable prop_names;
+
 static const uint8_t *placement_records;
 static uint32_t placement_records_size;
+static const uint8_t *prop_records;
+static uint32_t prop_records_size;
 
 static Chunk chunks[CHUNKS];
 static ChunkWater waters[CHUNKS];
@@ -395,46 +435,68 @@ static int ends_with(const char *text, const char *suffix) {
          strcmp(text + length - suffix_length, suffix) == 0;
 }
 
-static int find_or_add_building(const char *source) {
-  for (int i = 0; i < building_count; i++)
-    if (strcmp(building_sources[i], source) == 0)
+//the game names a model .mdx, and .mdl before it, and the file is .m2
+static void use_m2_extension(char *source) {
+  size_t length = strlen(source);
+
+  if (length > 4 && (strcmp(source + length - 4, ".mdx") == 0 ||
+                     strcmp(source + length - 4, ".mdl") == 0))
+    strcpy(source + length - 4, ".m2");
+}
+
+static int find_or_add_model(ModelList *list, const char *source,
+                             const char *extension) {
+  for (int i = 0; i < list->count; i++)
+    if (strcmp(list->sources[i], source) == 0)
       return i;
 
-  if (building_count == BUILDINGS_MAX)
+  if (list->count == list->capacity)
     return -1;
 
-  int slot = building_count++;
-  strcpy(building_sources[slot], source);
-  strcpy(building_files[slot], source);
-  strcpy(building_files[slot] + strlen(source) - 4, ".wwb");
+  size_t stem_length = strlen(source) - strlen(extension);
+  int slot = list->count++;
+  strcpy(list->sources[slot], source);
+  strcpy(list->files[slot], source);
+  strcpy(list->files[slot] + stem_length, ".wwb");
   return slot;
 }
 
-static int read_placement(const uint8_t *record, Placement *placement) {
-  uint32_t name_id = read_u32(record);
-  if (name_id >= building_offset_count)
-    return fail("a placement names a building that is not listed");
+//the model a placement's name id stands for, added to the list if it is new
+static int resolve_model(const NameTable *table, ModelList *list,
+                         uint32_t name_id, const char *extension) {
+  if (name_id >= table->offset_count)
+    return fail("a placement names a model that is not listed");
 
-  uint32_t offset = read_u32(building_offsets + name_id * sizeof(uint32_t));
-  if (offset >= building_names_size)
-    return fail("a building name starts past the end of the name block");
+  uint32_t offset = read_u32(table->offsets + name_id * sizeof(uint32_t));
+  if (offset >= table->paths_size)
+    return fail("a model name starts past the end of the name block");
 
   char source[BUILDING_PATH_MAX];
-  size_t length = strnlen((const char *)building_names + offset,
-                          building_names_size - offset);
+  size_t length = strnlen((const char *)table->paths + offset,
+                          table->paths_size - offset);
   if (length >= sizeof(source))
-    return fail("a building path is too long");
+    return fail("a model path is too long");
 
-  memcpy(source, building_names + offset, length);
+  memcpy(source, table->paths + offset, length);
   source[length] = 0;
   normalise_separators(source);
+  if (strcmp(extension, ".m2") == 0)
+    use_m2_extension(source);
 
-  if (ends_with(source, ".wmo") == 0)
-    return fail("a placed building is not a .wmo");
+  if (ends_with(source, extension) == 0)
+    return fail("a placed model is not the kind of file it should be");
 
-  int building = find_or_add_building(source);
+  int model = find_or_add_model(list, source, extension);
+  if (model < 0)
+    return fail("the tile places more kinds of model than fit");
+  return model;
+}
+
+static int read_placement(const uint8_t *record, Placement *placement) {
+  int building = resolve_model(&building_names, &buildings, read_u32(record),
+                               ".wmo");
   if (building < 0)
-    return fail("the tile places more kinds of building than fit");
+    return 1;
 
   placement->building = building;
   placement->unique_id = read_u32(record + 4);
@@ -446,6 +508,20 @@ static int read_placement(const uint8_t *record, Placement *placement) {
   return 0;
 }
 
+static int read_prop_placement(const uint8_t *record, PropPlacement *placement) {
+  int prop = resolve_model(&prop_names, &props, read_u32(record), ".m2");
+  if (prop < 0)
+    return 1;
+
+  placement->prop = prop;
+  placement->unique_id = read_u32(record + 4);
+  memcpy(placement->position, record + 8, sizeof(placement->position));
+  memcpy(placement->rotation, record + 20, sizeof(placement->rotation));
+  placement->scale = read_u16(record + 32);
+  placement->flags = read_u16(record + 34);
+  return 0;
+}
+
 static int read_placements(void) {
   placement_count = placement_records_size / MODF_SIZE;
   if (placement_count > PLACEMENTS_MAX)
@@ -453,6 +529,18 @@ static int read_placements(void) {
 
   for (int i = 0; i < placement_count; i++)
     if (read_placement(placement_records + i * MODF_SIZE, &placements[i]) != 0)
+      return 1;
+  return 0;
+}
+
+static int read_prop_placements(void) {
+  prop_placement_count = prop_records_size / MDDF_SIZE;
+  if (prop_placement_count > PROP_PLACEMENTS_MAX)
+    return fail("the tile has more prop placements than fit");
+
+  for (int i = 0; i < prop_placement_count; i++)
+    if (read_prop_placement(prop_records + i * MDDF_SIZE,
+                            &prop_placements[i]) != 0)
       return 1;
   return 0;
 }
@@ -473,14 +561,23 @@ static int read_tile(const uint8_t *bytes, size_t size) {
     else if (has_magic(bytes + offset, "KNCM"))
       result = read_chunk(bytes + offset, chunk_size);
     else if (has_magic(bytes + offset, "OMWM")) {
-      building_names = data;
-      building_names_size = chunk_size;
+      building_names.paths = data;
+      building_names.paths_size = chunk_size;
     } else if (has_magic(bytes + offset, "DIWM")) {
-      building_offsets = data;
-      building_offset_count = chunk_size / sizeof(uint32_t);
+      building_names.offsets = data;
+      building_names.offset_count = chunk_size / sizeof(uint32_t);
     } else if (has_magic(bytes + offset, "FDOM")) {
       placement_records = data;
       placement_records_size = chunk_size;
+    } else if (has_magic(bytes + offset, "XDMM")) {
+      prop_names.paths = data;
+      prop_names.paths_size = chunk_size;
+    } else if (has_magic(bytes + offset, "DIMM")) {
+      prop_names.offsets = data;
+      prop_names.offset_count = chunk_size / sizeof(uint32_t);
+    } else if (has_magic(bytes + offset, "FDDM")) {
+      prop_records = data;
+      prop_records_size = chunk_size;
     }
 
     if (result != 0)
@@ -492,7 +589,7 @@ static int read_tile(const uint8_t *bytes, size_t size) {
     if (chunks[i].found == 0)
       return fail("the tile is missing a chunk");
 
-  return read_placements();
+  return read_placements() || read_prop_placements();
 }
 
 //the tile is named for where it sits: map_<x>_<y>.adt
@@ -533,7 +630,7 @@ static int write_metadata(const char *path, int tile_x, int tile_y) {
     fprintf(file, "],\"holes\":%u}", chunks[i].holes);
   }
   fprintf(file, "],\"wmoNames\":[");
-  for (int i = 0; i < building_count; i++)
+  for (int i = 0; i < buildings.count; i++)
     fprintf(file, "%s\"%s\"", i ? "," : "", building_files[i]);
 
   fprintf(file, "],\"wmos\":[");
@@ -550,6 +647,22 @@ static int write_metadata(const char *path, int tile_x, int tile_y) {
             p->rotation[2], p->bounds[0], p->bounds[1], p->bounds[2],
             p->bounds[3], p->bounds[4], p->bounds[5], p->flags,
             p->doodad_set);
+  }
+  fprintf(file, "],\"doodadNames\":[");
+  for (int i = 0; i < props.count; i++)
+    fprintf(file, "%s\"%s\"", i ? "," : "", prop_files[i]);
+
+  fprintf(file, "],\"doodads\":[");
+  for (int i = 0; i < prop_placement_count; i++) {
+    const PropPlacement *p = &prop_placements[i];
+
+    fprintf(file,
+            "%s{\"nameId\":%u,\"uniqueId\":%u,"
+            "\"pos\":[%.4f,%.4f,%.4f],\"rot\":[%.4f,%.4f,%.4f],"
+            "\"scale\":%u,\"flags\":%u}",
+            i ? "," : "", p->prop, p->unique_id, p->position[0],
+            p->position[1], p->position[2], p->rotation[0], p->rotation[1],
+            p->rotation[2], p->scale, p->flags);
   }
   fprintf(file, "]}\n");
 
@@ -613,7 +726,8 @@ int main(int argc, char **argv) {
             "usage: adt2wot <map_x_y.adt> <output base>\n"
             "writes <output base>.wot, .whm and .wwt (the water), and prints the PNG each of "
             "the tile's textures is to be converted to, as 'texture <png>', and "
-            "each building it places, as 'building <wmo>'\n");
+            "each building it places, as 'building <wmo>', and each prop, as "
+            "'prop <m2>'\n");
     return 2;
   }
 
@@ -640,8 +754,10 @@ int main(int argc, char **argv) {
 
   for (int i = 0; i < texture_count; i++)
     printf("texture %s\n", textures[i]);
-  for (int i = 0; i < building_count; i++)
+  for (int i = 0; i < buildings.count; i++)
     printf("building %s\n", building_sources[i]);
+  for (int i = 0; i < props.count; i++)
+    printf("prop %s\n", prop_sources[i]);
 
   free(bytes);
   return 0;

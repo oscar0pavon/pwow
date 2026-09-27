@@ -2,8 +2,9 @@
 # usage: prepare_tile.sh <map> <x> <y> [radius]
 # turns a tile of the game data, and the tiles radius away from it, into what
 # pwow reads: data/<map>_<x>_<y>.wot, .whm and .wwt, a .wwb for each building
-# they place, and a PNG for each texture any of them use. a texture or building
-# already converted is left alone, and a tile the game does not have is skipped
+# and each prop they place, and a PNG for each texture any of them use. a
+# texture, building or prop already converted is left alone, and a tile the game
+# does not have is skipped
 set -e
 
 GAME_DATA=${GAME_DATA:-/root/sources/WoWee/Data/expansions/classic}
@@ -42,21 +43,23 @@ convert_textures_named_by() {
   done <<< "$1"
 }
 
-convert_building() {
-  local wmo=$1
-  local wwb="${wmo%.wmo}.wwb"
+#converts a building with wmo2wwb or a prop with m22wwb, which exit with 3, and
+#say why on their own, for one they will not take
+convert_model() {
+  local converter=$1
+  local source=$2
+  local wwb="${source%.*}.wwb"
   local lines status=0
 
   if [ -f "$out/$wwb" ]; then
     return
   fi
 
-  lines=$("$here/wmo2wwb" "$GAME_DATA" "$wmo" "$out") || status=$?
+  lines=$("$here/$converter" "$GAME_DATA" "$source" "$out") || status=$?
   if [ "$status" -eq 3 ]; then
-    echo "skipped $wmo: too many groups"
     return
   fi
-  [ "$status" -eq 0 ] || { echo "could not convert $wmo" >&2; return 1; }
+  [ "$status" -eq 0 ] || { echo "could not convert $source" >&2; return 1; }
 
   convert_textures_named_by "$lines"
 }
@@ -76,7 +79,9 @@ for ((y = centre_y - radius; y <= centre_y + radius; y++)); do
 
     while read -r kind path; do
       if [ "$kind" = building ]; then
-        convert_building "$path"
+        convert_model wmo2wwb "$path"
+      elif [ "$kind" = prop ]; then
+        convert_model m22wwb "$path"
       fi
     done <<< "$lines"
 

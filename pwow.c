@@ -12,10 +12,11 @@
 #define TILES_AROUND_CENTRE 1
 
 //in front of the Goldshire inn, sixty yards north of it and looking south. the
-//inn stands at X -9464, Y -24, on ground at 56
+//inn stands at X -9464, Y -24, on ground at 56. the trees along the road reach
+//past 80, so the camera is kept low, under the canopy
 #define START_X -9404.0f
 #define START_Y -24.0f
-#define START_Z 85.0f
+#define START_Z 66.0f
 
 //the ground fades into the horizon colour and the sky climbs from it to the
 //zenith, so the fog and the horizon have to be the same
