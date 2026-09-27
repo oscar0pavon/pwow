@@ -8,6 +8,7 @@
 #include <sys/stat.h>
 
 #define WWB_MAGIC 0x32425757
+#define WWC_MAGIC 0x31435757
 
 #define M2_MAGIC "MD20"
 #define M2_VANILLA_VERSION 256
@@ -19,6 +20,14 @@
 #define HEADER_TEXTURES 0x5C
 #define HEADER_RENDER_FLAGS 0x84
 #define HEADER_TEXTURE_LOOKUP 0x94
+
+//what a model is walked into by: a few triangles of its own that are much
+//simpler than the ones it is drawn with, a box for a fence or a cylinder for a
+//trunk, as indices and then positions. a model with none, a bush or a blade of
+//grass, is walked through
+#define HEADER_COLLISION_INDICES 0xEC
+#define HEADER_COLLISION_VERTICES 0xF4
+#define COLLISION_VERTEX_SIZE 12
 
 #define VERTEX_SIZE 48
 #define VERTEX_POSITION 0
@@ -309,7 +318,7 @@ static int append_submesh(const uint8_t *submesh, const uint16_t *lookup,
 }
 
 static int read_model(void) {
-  if (model_size < 0xE0 || memcmp(model, M2_MAGIC, 4) != 0)
+  if (model_size < 0x104 || memcmp(model, M2_MAGIC, 4) != 0)
     return fail("not a model file");
   if (read_u32(model + 4) != M2_VANILLA_VERSION)
     return fail("not a classic model, whose version is 256");
@@ -448,6 +457,42 @@ static int write_building(const char *path) {
   return 0;
 }
 
+//INFO the collision of a model goes in a file beside it, WWC1: a count of
+//positions, a count of indices, the positions as three floats each and the
+//indices, three to a triangle, as words. a model that has none has no file
+static int write_collision(const char *path) {
+  uint32_t position_count, index_count;
+  const uint8_t *positions, *indices16;
+
+  if (read_array(HEADER_COLLISION_VERTICES, COLLISION_VERTEX_SIZE,
+                 &position_count, &positions) != 0 ||
+      read_array(HEADER_COLLISION_INDICES, sizeof(uint16_t), &index_count,
+                 &indices16) != 0)
+    return 1;
+
+  index_count -= index_count % 3;
+  if (index_count == 0)
+    return 0;
+
+  for (uint32_t i = 0; i < index_count; i++)
+    if (read_u16(indices16 + i * sizeof(uint16_t)) >= position_count)
+      return fail("the collision names a position the model does not have");
+
+  FILE *file = fopen(path, "wb");
+  if (file == NULL)
+    return fail("can't write the .wwc");
+
+  write_u32(file, WWC_MAGIC);
+  write_u32(file, position_count);
+  write_u32(file, index_count);
+  fwrite(positions, COLLISION_VERTEX_SIZE, position_count, file);
+  for (uint32_t i = 0; i < index_count; i++)
+    write_u32(file, read_u16(indices16 + i * sizeof(uint16_t)));
+
+  fclose(file);
+  return 0;
+}
+
 //the game's map files name a model .mdx and the files are .m2, or now and
 //then still .mdx
 static uint8_t *read_model_file(const char *directory, const char *stem) {
@@ -469,8 +514,9 @@ int main(int argc, char **argv) {
             "usage: m22wwb <game data> <model path> <output directory>\n"
             "converts one classic model, given as the game names it in "
             "lowercase with forward slashes and ending in .m2, to "
-            "<output>/<path>.wwb and prints the PNG each texture is to be "
-            "converted to, as 'texture <png>'. exits with 3, and writes "
+            "<output>/<path>.wwb, and what it is walked into by to "
+            "<output>/<path>.wwc if it has any, and prints the PNG each "
+            "texture is to be converted to, as 'texture <png>'. exits with 3, and writes "
             "nothing, for a model with nothing in it to draw\n");
     return 2;
   }
@@ -499,6 +545,10 @@ int main(int argc, char **argv) {
   char out_path[PATH_MAX];
   snprintf(out_path, sizeof(out_path), "%s/%s.wwb", argv[3], stem);
   if (write_building(out_path) != 0)
+    return 1;
+
+  snprintf(out_path, sizeof(out_path), "%s/%s.wwc", argv[3], stem);
+  if (write_collision(out_path) != 0)
     return 1;
 
   for (uint32_t i = 0; i < texture_count; i++)
