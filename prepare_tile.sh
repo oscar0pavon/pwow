@@ -2,9 +2,9 @@
 # usage: prepare_tile.sh <map> <x> <y> [radius]
 # turns a tile of the game data, and the tiles radius away from it, into what
 # pwow reads: data/<map>_<x>_<y>.wot, .whm and .wwt, a .wwb for each building
-# and each prop they place, and a PNG for each texture any of them use. a
-# texture, building or prop already converted is left alone, and a tile the game
-# does not have is skipped
+# and each prop they place, the props inside each building too, and a PNG for
+# each texture any of them use. a texture, building or prop already converted is
+# left alone, and a tile the game does not have is skipped
 set -e
 
 GAME_DATA=${GAME_DATA:-/root/sources/WoWee/Data/expansions/classic}
@@ -43,25 +43,53 @@ convert_textures_named_by() {
   done <<< "$1"
 }
 
-#converts a building with wmo2wwb or a prop with m22wwb, which exit with 3, and
-#say why on their own, for one they will not take
-convert_model() {
+#runs a converter, wmo2wwb for a building or m22wwb for a prop, on one file. it
+#exits with 3, and says why itself, for one it will not take. prints what the
+#converter printed, and nothing for a file it will not take
+run_converter() {
   local converter=$1
   local source=$2
-  local wwb="${source%.*}.wwb"
   local lines status=0
+
+  lines=$("$here/$converter" "$GAME_DATA" "$source" "$out") || status=$?
+  if [ "$status" -eq 3 ]; then
+    return 0
+  fi
+  [ "$status" -eq 0 ] || { echo "could not convert $source" >&2; return 1; }
+
+  echo "$lines"
+}
+
+convert_prop() {
+  local wwb="${1%.*}.wwb"
+  local lines
 
   if [ -f "$out/$wwb" ]; then
     return
   fi
 
-  lines=$("$here/$converter" "$GAME_DATA" "$source" "$out") || status=$?
-  if [ "$status" -eq 3 ]; then
+  lines=$(run_converter m22wwb "$1")
+  convert_textures_named_by "$lines"
+}
+
+#a building has its .wwd, the props inside it, as well as its .wwb, and those
+#props are converted too
+convert_building() {
+  local wwd="${1%.*}.wwd"
+  local lines kind path
+
+  if [ -f "$out/$wwd" ]; then
     return
   fi
-  [ "$status" -eq 0 ] || { echo "could not convert $source" >&2; return 1; }
 
+  lines=$(run_converter wmo2wwb "$1")
   convert_textures_named_by "$lines"
+
+  while read -r kind path; do
+    if [ "$kind" = prop ]; then
+      convert_prop "$path"
+    fi
+  done <<< "$lines"
 }
 
 for ((y = centre_y - radius; y <= centre_y + radius; y++)); do
@@ -79,9 +107,9 @@ for ((y = centre_y - radius; y <= centre_y + radius; y++)); do
 
     while read -r kind path; do
       if [ "$kind" = building ]; then
-        convert_model wmo2wwb "$path"
+        convert_building "$path"
       elif [ "$kind" = prop ]; then
-        convert_model m22wwb "$path"
+        convert_prop "$path"
       fi
     done <<< "$lines"
 

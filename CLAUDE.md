@@ -29,8 +29,8 @@ Controls: W A S D move, Space / C up and down (flying only), I K pitch, J L turn
 
 ```
 world/maps/<map>/<map>_<x>_<y>.adt ──adt2wot──▶ data/<map>_<x>_<y>.wot + .whm + .wwt
-world/wmo/**/name.wmo + name_NNN.wmo ──wmo2wwb──▶ data/world/wmo/**/name.wwb
-world/**/name.m2 (the props) ──m22wwb──▶ data/world/**/name.wwb
+world/wmo/**/name.wmo + name_NNN.wmo ──wmo2wwb──▶ data/world/wmo/**/name.wwb + name.wwd
+world/**/name.m2 (the props, and those inside buildings) ──m22wwb──▶ data/world/**/name.wwb
 *.blp (tile, building and prop textures) ──blp_convert──▶ data/**/*.png
                                             │
               pe_vk_terrain_world_load_area() ◀┘  (pengine)
@@ -41,6 +41,8 @@ world/**/name.m2 (the props) ──m22wwb──▶ data/world/**/name.wwb
 The `.wot` also carries the tile's buildings in WoWee's own `wmoNames` / `wmos` fields: each placement's raw ADT position, rotation in degrees, unique id, and the world box Blizzard stored for it. `adt2wot` prints `texture <png>` and `building <wmo path>` lines, which `prepare_tile.sh` acts on. `tools/wmo2wwb.c` converts one building, its root file and its `_NNN` group files, to a `.wwb`; a building with more than 64 groups is refused with exit code 3, which is how Stormwind (the whole city, 306 groups) is skipped. The engine logs the missing `.wwb` once and leaves those placements out.
 
 The props, the trees and fences and barrels and grass, are the tile's MDDF placements (`doodadNames` / `doodads` in the `.wot`, 36-byte records: raw position, rotation, scale with 1024 for life size) and are models of the game's own `.m2` format. A Goldshire tile places 200 to 1500 of them, 7500 in the 3x3 block, of about 200 kinds. `tools/m22wwb.c` reads a classic model (version 256, whose views are inside the file and not in `.skin` files) and writes a `.wwb` of one group, so the building renderer draws it unchanged. What it keeps: the first view, the batches on the base layer (`materialLayer` 0), and materials whose blend is opaque, alpha-key or alpha, the last drawn as alpha-key; a batch that adds or multiplies (glows, light shafts) is dropped. Vertex colours are white, since a model carries no baked light. A model with nothing left to draw (`fireflies01.m2`) is refused with exit code 3, and the engine logs its missing `.wwb` once. The map files name a model `.mdx` and the file is `.m2`, so `adt2wot` writes `.m2`.
+
+A building also holds props inside it: its tables, lamps, barrels, rugs and chandeliers, 67 kinds in the Goldshire inn. They are in its root `.wmo`, not in the map: MODD lists them (40 bytes each: a name that is a byte offset into MODN, position, a quaternion x y z w, scale) and MODS groups them into sets. `wmo2wwb` writes them to `name.wwd` (`WWD1`: model paths as `.wwb`, sets as first and count, props as model, position, quaternion, scale), always, empty for a building with none, and prints a `prop <m2>` line for each model, which `prepare_tile.sh` converts. A placement draws set 0 and the set named by its `doodadSet`. The prop's matrix is the building's own placement matrix times the prop's place in the building (translate, quaternion, scale), in the building's axes with no reflection; taken as written, the chairs stand upright around their table and the chandeliers hang. A building converted before the `.wwd` existed has none, so `prepare_tile.sh` converts it again when the `.wwd` is missing.
 
 `.wwb` is ours too (`WWB2`): the box round all the groups, a texture path table, materials `{texture, blend, flags}`, then per group its flags, its own box, 36-byte vertices, u32 indices and batches `{first_index, index_count, material}`. The group flags and boxes are read and not used to draw. Bumping the magic means old `.wwb` files are refused, so delete `data/world/wmo/**/*.wwb` and rerun `prepare_tile.sh` after changing the format. WoWee's own building format merges materials per group and loses the batches, which is why it is not used.
 

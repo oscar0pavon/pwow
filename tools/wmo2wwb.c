@@ -1,4 +1,5 @@
 #include <ctype.h>
+#include <math.h>
 #include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -7,6 +8,7 @@
 #include <sys/stat.h>
 
 #define WWB_MAGIC 0x32425757
+#define WWD_MAGIC 0x31445757
 #define WMO_VERSION 17
 
 //a group's chunk header, then the group header inside it: the flags and the
@@ -27,6 +29,23 @@
 #define BATCH_INDEX_COUNT 16
 #define BATCH_LAST_VERTEX 20
 #define BATCH_MATERIAL 23
+
+//the props a building holds inside, its tables and lamps and barrels. the root
+//file lists them in MODD, 40 bytes each, and groups them in MODS into sets, 32
+//bytes each, a set being a run of them. a placement of the building chooses one
+//set, and set 0 is for all. the name a prop has is a byte offset into MODN
+#define DOODAD_SIZE 40
+#define DOODAD_NAME_MASK 0x00FFFFFF
+#define DOODAD_POSITION 4
+#define DOODAD_ROTATION 16
+#define DOODAD_SCALE 32
+#define DOODAD_SET_SIZE 32
+#define DOODAD_SET_FIRST 20
+#define DOODAD_SET_COUNT 24
+
+#define DOODADS_MAX 65536
+#define DOODAD_SETS_MAX 64
+#define DOODAD_NAMES_MAX 1024
 
 #define GROUPS_MAX 64
 #define TEXTURES_MAX 256
@@ -60,6 +79,28 @@ typedef struct Material {
   uint32_t blend;
   uint32_t flags;
 } Material;
+
+typedef struct Doodad {
+  uint32_t name;
+  float position[3];
+  float rotation[4];
+  float scale;
+} Doodad;
+
+typedef struct DoodadSet {
+  uint32_t first;
+  uint32_t count;
+} DoodadSet;
+
+static Doodad *doodads;
+static uint32_t doodad_count;
+static DoodadSet doodad_sets[DOODAD_SETS_MAX];
+static uint32_t doodad_set_count;
+
+//the models the doodads are, as the game names them but lowercase, forward
+//slashes and .m2
+static char doodad_models[DOODAD_NAMES_MAX][PATH_MAX_LENGTH];
+static uint32_t doodad_model_count;
 
 static Group groups[GROUPS_MAX];
 static uint32_t group_count;
@@ -184,6 +225,95 @@ static int read_materials(const uint8_t *data, uint32_t size,
   return 0;
 }
 
+//the game names a model .mdx, and .mdl before it, and the file is .m2
+static void use_m2_extension(char *name) {
+  size_t length = strlen(name);
+
+  if (length > 4 && (strcmp(name + length - 4, ".mdx") == 0 ||
+                     strcmp(name + length - 4, ".mdl") == 0))
+    strcpy(name + length - 4, ".m2");
+}
+
+static int find_or_add_doodad_model(const char *name, uint32_t *index) {
+  for (uint32_t i = 0; i < doodad_model_count; i++) {
+    if (strcmp(doodad_models[i], name) == 0) {
+      *index = i;
+      return 0;
+    }
+  }
+
+  if (doodad_model_count == DOODAD_NAMES_MAX)
+    return fail("the building holds more kinds of prop than fit");
+
+  strcpy(doodad_models[doodad_model_count], name);
+  *index = doodad_model_count++;
+  return 0;
+}
+
+static int doodad_model(const uint8_t *names, uint32_t names_size,
+                        uint32_t offset, uint32_t *model) {
+  if (offset >= names_size)
+    return fail("a prop's name starts past the end of the name block");
+
+  size_t length = strnlen((const char *)names + offset, names_size - offset);
+  if (length >= PATH_MAX_LENGTH)
+    return fail("a prop's path is too long");
+
+  char name[PATH_MAX_LENGTH];
+  memcpy(name, names + offset, length);
+  name[length] = 0;
+  for (char *c = name; *c; c++)
+    *c = *c == '\\' ? '/' : tolower((unsigned char)*c);
+  use_m2_extension(name);
+
+  if (length < 4 || strcmp(name + strlen(name) - 3, ".m2") != 0)
+    return fail("a prop is not a model");
+
+  return find_or_add_doodad_model(name, model);
+}
+
+static int read_doodads(const uint8_t *names, uint32_t names_size,
+                        const uint8_t *records, uint32_t records_size,
+                        const uint8_t *sets, uint32_t sets_size) {
+  doodad_count = records_size / DOODAD_SIZE;
+  doodad_set_count = sets_size / DOODAD_SET_SIZE;
+  if (doodad_count > DOODADS_MAX || doodad_set_count > DOODAD_SETS_MAX)
+    return fail("the building holds more props or sets than fit");
+
+  doodads = calloc(doodad_count ? doodad_count : 1, sizeof(Doodad));
+
+  for (uint32_t i = 0; i < doodad_count; i++) {
+    const uint8_t *record = records + i * DOODAD_SIZE;
+    Doodad *doodad = &doodads[i];
+
+    if (doodad_model(names, names_size, read_u32(record) & DOODAD_NAME_MASK,
+                     &doodad->name) != 0)
+      return 1;
+
+    for (int k = 0; k < 3; k++)
+      doodad->position[k] = read_f32(record + DOODAD_POSITION + k * 4);
+    for (int k = 0; k < 4; k++)
+      doodad->rotation[k] = read_f32(record + DOODAD_ROTATION + k * 4);
+    doodad->scale = read_f32(record + DOODAD_SCALE);
+
+    if (isfinite(doodad->position[0] + doodad->position[1] +
+                 doodad->position[2] + doodad->rotation[0] +
+                 doodad->rotation[1] + doodad->rotation[2] +
+                 doodad->rotation[3] + doodad->scale) == 0)
+      return fail("a prop is placed at a number that is not one");
+  }
+
+  for (uint32_t i = 0; i < doodad_set_count; i++) {
+    const uint8_t *record = sets + i * DOODAD_SET_SIZE;
+
+    doodad_sets[i].first = read_u32(record + DOODAD_SET_FIRST);
+    doodad_sets[i].count = read_u32(record + DOODAD_SET_COUNT);
+    if ((uint64_t)doodad_sets[i].first + doodad_sets[i].count > doodad_count)
+      return fail("a set of props reaches past the props");
+  }
+  return 0;
+}
+
 static int read_root(const char *path, uint32_t *declared_groups) {
   size_t size;
   uint8_t *bytes = read_file(path, &size);
@@ -194,6 +324,12 @@ static int read_root(const char *path, uint32_t *declared_groups) {
   uint32_t names_size = 0;
   const uint8_t *material_data = NULL;
   uint32_t material_size = 0;
+  const uint8_t *doodad_names = NULL;
+  uint32_t doodad_names_size = 0;
+  const uint8_t *doodad_data = NULL;
+  uint32_t doodad_size = 0;
+  const uint8_t *set_data = NULL;
+  uint32_t set_size = 0;
   int version = 0;
   *declared_groups = 0;
 
@@ -214,6 +350,15 @@ static int read_root(const char *path, uint32_t *declared_groups) {
     } else if (has_magic(bytes + offset, "TMOM")) {
       material_data = data;
       material_size = chunk_size;
+    } else if (has_magic(bytes + offset, "NDOM")) {
+      doodad_names = data;
+      doodad_names_size = chunk_size;
+    } else if (has_magic(bytes + offset, "DDOM")) {
+      doodad_data = data;
+      doodad_size = chunk_size;
+    } else if (has_magic(bytes + offset, "SDOM")) {
+      set_data = data;
+      set_size = chunk_size;
     }
     offset += SUBCHUNK_HEADER + chunk_size;
   }
@@ -224,6 +369,9 @@ static int read_root(const char *path, uint32_t *declared_groups) {
     return fail("the root file has no materials or no textures");
 
   int result = read_materials(material_data, material_size, names, names_size);
+  if (result == 0 && doodad_data != NULL && doodad_names != NULL)
+    result = read_doodads(doodad_names, doodad_names_size, doodad_data,
+                          doodad_size, set_data, set_data ? set_size : 0);
   free(bytes);
   return result;
 }
@@ -459,13 +607,55 @@ static int write_building(const char *path) {
   return 0;
 }
 
+//INFO the props of a building go in a file beside it, WWD1: the models they
+//are, as paths to .wwb, then each set as its first prop and how many, then each
+//prop as its model, its position, its rotation as a quaternion x y z w and its
+//scale, all in the building's own axes. a building holding none has the file
+//too, empty, which is how the converter knows it has been through here
+static int write_doodads(const char *path) {
+  FILE *file = fopen(path, "wb");
+  if (file == NULL)
+    return fail("can't write the .wwd");
+
+  write_u32(file, WWD_MAGIC);
+  write_u32(file, doodad_model_count);
+  for (uint32_t i = 0; i < doodad_model_count; i++) {
+    char wwb[PATH_MAX_LENGTH + 2];
+    snprintf(wwb, sizeof(wwb), "%.*s.wwb", (int)strlen(doodad_models[i]) - 3,
+             doodad_models[i]);
+
+    uint16_t length = strlen(wwb);
+    fwrite(&length, sizeof(length), 1, file);
+    fwrite(wwb, 1, length, file);
+  }
+
+  write_u32(file, doodad_set_count);
+  for (uint32_t i = 0; i < doodad_set_count; i++) {
+    write_u32(file, doodad_sets[i].first);
+    write_u32(file, doodad_sets[i].count);
+  }
+
+  write_u32(file, doodad_count);
+  for (uint32_t i = 0; i < doodad_count; i++) {
+    write_u32(file, doodads[i].name);
+    fwrite(doodads[i].position, sizeof(float), 3, file);
+    fwrite(doodads[i].rotation, sizeof(float), 4, file);
+    fwrite(&doodads[i].scale, sizeof(float), 1, file);
+  }
+
+  fclose(file);
+  return 0;
+}
+
 int main(int argc, char **argv) {
   if (argc != 4) {
     fprintf(stderr,
             "usage: wmo2wwb <game data> <wmo path> <output directory>\n"
             "converts one building, given as the game names it in lowercase "
-            "with forward slashes, to <output>/<path>.wwb and prints the PNG "
-            "each texture is to be converted to, as 'texture <png>'\n");
+            "with forward slashes, to <output>/<path>.wwb, and the props inside "
+            "it to <output>/<path>.wwd. prints the PNG each texture is to be "
+            "converted to, as 'texture <png>', and each model the props are, "
+            "as 'prop <m2>'\n");
     return 2;
   }
 
@@ -511,7 +701,14 @@ int main(int argc, char **argv) {
   if (write_building(out_path) != 0)
     return 1;
 
+  snprintf(out_path, sizeof(out_path), "%s/%.*s.wwd", argv[3],
+           (int)(path_length - 4), wmo_path);
+  if (write_doodads(out_path) != 0)
+    return 1;
+
   for (uint32_t i = 0; i < texture_count; i++)
     printf("texture %s\n", textures[i]);
+  for (uint32_t i = 0; i < doodad_model_count; i++)
+    printf("prop %s\n", doodad_models[i]);
   return 0;
 }
