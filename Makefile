@@ -4,7 +4,7 @@ include $(WORKDIR)/include.make
 
 .PHONY: all clean
 
-all: pwow adt2wot wmo2wwb m22wwb
+all: pwow adt2wot wmo2wwb m22wwb m22gltf
 
 pwow: pwow.c $(WORKDIR)/lib/libpengine.a
 	$(CC) $(CFLAGS) $(GLOBAL_DEFINE) $(CINCLUDES) pwow.c \
@@ -19,5 +19,8 @@ wmo2wwb: tools/wmo2wwb.c
 m22wwb: tools/m22wwb.c
 	$(CC) -O2 -Wall -Wextra tools/m22wwb.c -o m22wwb
 
+m22gltf: tools/m22gltf.c
+	$(CC) -O2 -Wall -Wextra tools/m22gltf.c -o m22gltf
+
 clean:
-	rm -f pwow adt2wot wmo2wwb m22wwb
+	rm -f pwow adt2wot wmo2wwb m22wwb m22gltf
