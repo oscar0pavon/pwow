@@ -82,6 +82,7 @@
 #define VIEW_BATCHES 32
 
 #define SUBMESH_SIZE 32
+#define SUBMESH_GEOSET 0
 #define SUBMESH_FIRST_INDEX 8
 #define SUBMESH_INDEX_COUNT 10
 
@@ -136,6 +137,7 @@ typedef struct Batch {
   uint32_t first_index;
   uint32_t index_count;
   uint32_t material;
+  uint32_t geoset;
 } Batch;
 
 //a flat array of keyframes for every sub animation the model has, back to
@@ -428,6 +430,7 @@ static int append_submesh(const uint8_t *submesh, const uint16_t *lookup,
   batch->first_index = index_count;
   batch->index_count = count;
   batch->material = material;
+  batch->geoset = read_u16(submesh + SUBMESH_GEOSET);
 
   for (uint32_t i = 0; i < count; i++) {
     uint32_t position = read_u16(triangles + (first + i) * sizeof(uint16_t));
@@ -1092,9 +1095,11 @@ static void write_gltf(const char *path) {
       buf_str(&json, ",");
     buf_fmt(&json,
            "{\"attributes\":{\"POSITION\":%u,\"NORMAL\":%u,\"TEXCOORD_0\":%u,"
-           "\"JOINTS_0\":%u,\"WEIGHTS_0\":%u},\"indices\":%u,\"material\":%u}",
+           "\"JOINTS_0\":%u,\"WEIGHTS_0\":%u},\"indices\":%u,\"material\":%u,"
+           "\"extras\":{\"geoset\":%u}}",
            position_accessor, normal_accessor, uv_accessor, joints_accessor,
-           weights_accessor, batch_accessor[i], batches[i].material);
+           weights_accessor, batch_accessor[i], batches[i].material,
+           batches[i].geoset);
   }
   buf_str(&json, "]}],");
 
