@@ -30,6 +30,27 @@ history, credentials and file:line references behind these items.
 5. Everything else of WoWee's `game/` module (chat, spells, quests, inventory,
    transports) is out of scope until something above needs it.
 
+## Text / HUD
+
+**Done**: `pfonts` (`/root/pfonts`) grew a Vulkan rendering backend
+(`vulkan.c`/`.h`), alongside its existing GL and CPU-pixel-buffer ones, and
+pengine wraps it as `engine/text.h`/`text.c` (`pe_text_init/sync/begin/
+draw/end`), wired into `pe_vk_draw_frame()` for the atlas upload and
+available to any `pe_vk_draw_scene` hook for drawing. `main.c`'s
+`pwow_draw_scene` uses it for a one-line HUD (map name + player position) -
+see `pfonts`'s own CLAUDE.md for the Vulkan backend's design and gotchas
+(atlas upload has to happen outside the render pass; the pipeline's sample
+count has to match the host's render pass's). This is the foundation for:
+
+1. Nameplates/name-and-health text over entities, once item 1 of Live
+   client above lands and there is something to label.
+2. Anything else that wants on-screen text - an FPS counter, a chat line,
+   debug readouts - can now call `pe_text_draw()` from inside
+   `pwow_draw_scene` without new engine work.
+3. Not done: a real widget/window abstraction, input focus, or anything
+   past drawing a string at a position - see the `pfonts` CLAUDE.md's own
+   backend doc for exactly what's covered.
+
 ## Animation
 
 Context: `tools/m22gltf.c` bakes M2 bones/tracks into a glTF skin + one clip

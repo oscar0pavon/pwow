@@ -12,12 +12,14 @@
 #include <engine/renderer/vulkan.h>
 #include <engine/skeletal.h>
 #include <engine/terrain/terrain_world.h>
+#include <engine/text.h>
 #include <engine/time.h>
 #include <engine/window_manager.h>
 #include <engine/wowauth/wowauth.h>
 #include <engine/wowauth/wowworld.h>
 
 #include <math.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "camera.h"
@@ -26,6 +28,9 @@
 #define PLAYER_MODEL_PATH "data/character/tauren/male/taurenmale.glb"
 #define PLAYER_SKIN_PATH "data/character/tauren/male/taurenmaleskin00_00.png"
 #define PLAYER_ANIMATION "Stand"
+
+#define HUD_FONT_PATH "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf"
+#define HUD_FONT_SIZE 20.0f
 
 #define DATA_DIRECTORY "data"
 
@@ -312,9 +317,20 @@ static void pwow_draw_scene(PRenderTarget *target, VkCommandBuffer *command,
 
   pe_vk_terrain_world_draw(&world, &frame, *command, image_index);
   player_draw(command, image_index);
+
+  char hud_line[128];
+  snprintf(hud_line, sizeof(hud_line), "%s  (%.0f, %.0f, %.0f)", map,
+           player_position[0], player_position[1], player_position[2]);
+
+  pe_text_begin(*command, target, image_index);
+  pe_text_draw(hud_line, (vec3){1.f, 1.f, 1.f}, 10, pe_text_ascent() + 10);
+  pe_text_end();
 }
 
 static void pwow_init() {
+  if (!pe_text_init(HUD_FONT_PATH, HUD_FONT_SIZE))
+    LOG("pwow: can't load HUD font %s\n", HUD_FONT_PATH);
+
   pe_vk_terrain_world_create(&world);
 
   vec3 position;
