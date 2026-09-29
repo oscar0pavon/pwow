@@ -740,6 +740,7 @@ static void update_live_character(float seconds) {
 static void pwow_update() {
   if (live_mode) {
     pe_wowworld_poll(&world_conn, &npc_state);
+    pe_wowobject_state_tick(&npc_state, delta_time);
     creatures_sync(&npc_state);
     update_live_character(delta_time);
     stream_world();
