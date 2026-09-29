@@ -10,24 +10,23 @@ actual NPCs instead of only static terrain. See memory
 `project-pwow-live-client-goal` / `project-vmangos-server` for the full
 history, credentials and file:line references behind these items.
 
-1. **Parse `SMSG_UPDATE_OBJECT`/`SMSG_COMPRESSED_UPDATE_OBJECT`** to get
-   creature spawn position + display id and render them. `pe_wowworld_read_packet`
-   is the primitive; `pe_wowworld_player_login` currently reads and discards
-   every packet between login and `SMSG_LOGIN_VERIFY_WORLD` (spells, action
-   bars, reputation, the player's own object update) — that discard loop needs
-   to become a real dispatch loop, since entity data is very likely already
-   flying by unparsed in that window.
-2. **Fallback/interim option**: skip live networking for now and read creature
-   spawns directly from the vmangos world database (`creature`/`creature_template`
-   tables, 66,243 spawns / 15,217 templates already loaded) for a static NPC
-   pass into pwow.
-3. Tune live-character feel by hand: `CHARACTER_MOVE_SPEED`,
+1. **Done**: parse `SMSG_UPDATE_OBJECT`/`SMSG_COMPRESSED_UPDATE_OBJECT` for
+   creature spawn position + display id. New pengine module
+   `wowauth/wowobject.h`/`.c`, dispatched by a new `pe_wowworld_poll()`
+   (`wowworld.h`/`.c`) that `pwow_update()` calls once a frame in live mode;
+   the world connection is now kept open after login instead of closed. HUD
+   lists the nearest few tracked creatures (entry, display id, distance) to
+   prove it end to end — see "Text / HUD" below for what's next now that
+   there's real entity data to draw. Not yet rendered as models (that's its
+   own large feature: display id → `CreatureDisplayInfo.dbc` → model →
+   `m22gltf`).
+2. Tune live-character feel by hand: `CHARACTER_MOVE_SPEED`,
    `CHARACTER_TURN_SPEED_DEGREES`, camera distance (top of `main.c`) — never
    actually played with, only reasoned about.
-4. Character creation (`CMSG_CHAR_CREATE`) isn't ported — the one test
+3. Character creation (`CMSG_CHAR_CREATE`) isn't ported — the one test
    character was made with the real WoWee client. Only needed if pwow should
    be able to create a character itself.
-5. Everything else of WoWee's `game/` module (chat, spells, quests, inventory,
+4. Everything else of WoWee's `game/` module (chat, spells, quests, inventory,
    transports) is out of scope until something above needs it.
 
 ## Text / HUD

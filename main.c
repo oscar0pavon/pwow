@@ -17,6 +17,7 @@
 #include <engine/window_manager.h>
 #include <engine/wowauth/wowauth.h>
 #include <engine/wowauth/wowdbc.h>
+#include <engine/wowauth/wowobject.h>
 #include <engine/wowauth/wowworld.h>
 
 #include <ctype.h>
@@ -173,6 +174,13 @@ static PTerrainWorld world;
 static bool live_mode;
 static float live_player_z;
 static float live_player_facing_degrees;
+
+//the world connection live_login() makes, kept open (not closed after
+//login like it used to be) so pwow_update() can keep polling it every
+//frame for SMSG_UPDATE_OBJECT/SMSG_COMPRESSED_UPDATE_OBJECT - the only way
+//creature spawns ever reach pwow
+static PWowWorld world_conn;
+static PWowObjectState npc_state;
 
 //the character's own position/facing in live mode, updated every frame by
 //input; the orbit camera that follows it
@@ -384,6 +392,53 @@ static void fill_lighting(PTerrainFrame *frame) {
   glm_vec4_copy((vec4){FOG_START, FOG_END, 0, 0}, frame->fog_range);
 }
 
+#define NPC_HUD_LINES 5
+
+//lists the nearest few tracked creatures below the position line, nearest
+//first - proves pe_wowworld_poll()/pe_wowobject_handle_packet() are parsing
+//real spawns without needing any model rendering yet. must run inside a
+//pe_text_begin()/pe_text_end() pair
+static void draw_npc_hud(float y) {
+  int best_idx[NPC_HUD_LINES];
+  float best_dist[NPC_HUD_LINES];
+  int best_count = 0;
+
+  for (int i = 0; i < npc_state.count; i++) {
+    PWowCreature *c = &npc_state.creatures[i];
+    float dx = c->x - player_position[0];
+    float dy = c->y - player_position[1];
+    float dz = c->z - player_position[2];
+    float dist = sqrtf(dx * dx + dy * dy + dz * dz);
+
+    if (best_count == NPC_HUD_LINES && dist >= best_dist[NPC_HUD_LINES - 1])
+      continue;
+
+    int pos = best_count < NPC_HUD_LINES ? best_count : NPC_HUD_LINES - 1;
+    while (pos > 0 && best_dist[pos - 1] > dist) {
+      best_dist[pos] = best_dist[pos - 1];
+      best_idx[pos] = best_idx[pos - 1];
+      pos--;
+    }
+    best_dist[pos] = dist;
+    best_idx[pos] = i;
+    if (best_count < NPC_HUD_LINES)
+      best_count++;
+  }
+
+  char line[64];
+  vec3 color = {0.7f, 0.9f, 1.f};
+  snprintf(line, sizeof(line), "npcs: %d", npc_state.count);
+  pe_text_draw(line, color, 10, y);
+
+  for (int i = 0; i < best_count; i++) {
+    PWowCreature *c = &npc_state.creatures[best_idx[i]];
+    y += pe_text_cell_height();
+    snprintf(line, sizeof(line), "  entry=%u display=%u %.0fy", c->entry,
+             c->display_id, best_dist[i]);
+    pe_text_draw(line, color, 10, y);
+  }
+}
+
 static void pwow_draw_scene(PRenderTarget *target, VkCommandBuffer *command,
                             uint32_t image_index) {
   PTerrainFrame frame;
@@ -400,6 +455,8 @@ static void pwow_draw_scene(PRenderTarget *target, VkCommandBuffer *command,
 
   pe_text_begin(*command, target, image_index);
   pe_text_draw(hud_line, (vec3){1.f, 1.f, 1.f}, 10, pe_text_ascent() + 10);
+  if (live_mode)
+    draw_npc_hud(pe_text_ascent() + 10 + pe_text_cell_height());
   pe_text_end();
 }
 
@@ -666,6 +723,7 @@ static void update_live_character(float seconds) {
 
 static void pwow_update() {
   if (live_mode) {
+    pe_wowworld_poll(&world_conn, &npc_state);
     update_live_character(delta_time);
     stream_world();
     play_animation_list(delta_time);
@@ -744,7 +802,6 @@ static void live_login(const char *host, int port, const char *account,
           (int)(colon - realm->address), realm->address);
   int realm_port = atoi(colon + 1);
 
-  PWowWorld world_conn;
   char error[PE_WOWWORLD_ERROR_MAX];
   if (!pe_wowworld_connect(realm_host, realm_port, account, auth.session_key,
                            5875, realm->id, &world_conn, error,
@@ -772,7 +829,8 @@ static void live_login(const char *host, int port, const char *account,
     fprintf(stderr, "player login failed: %s\n", error);
     exit(1);
   }
-  pe_wowworld_close(&world_conn);
+  //left open on purpose: pwow_update() polls it every frame from here on
+  //for SMSG_UPDATE_OBJECT, the only way a creature spawn ever reaches pwow
 
   const char *login_map = map_name_for_id(login.map);
   if (!login_map) {
