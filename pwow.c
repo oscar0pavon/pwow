@@ -259,11 +259,9 @@ static void pwow_update() {
   camera_update(&main_camera);
 }
 
-static void pwow_draw() {}
-
 static void pwow_input() {
   if (key_released(&input.Q))
-    exit(0);
+    pe_terminate();
 }
 
 static void read_start_tile(char **arguments) {
@@ -289,7 +287,6 @@ int main(int argc, char **argv) {
   game.name = "pwow";
   game.init = &pwow_init;
   game.update = &pwow_update;
-  game.draw = &pwow_draw;
   game.input = &pwow_input;
 
   pe_renderer_type = PEWMVULKAN;
