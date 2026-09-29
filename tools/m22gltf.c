@@ -116,10 +116,24 @@
 //file, 8704 bytes apart for 128 sequences, and 8704 / 128 is exactly 68 --
 //which is also exactly what summing the documented old-version fields comes
 //to by hand
+//
+//INFO those two 4 byte timestamps (confirmed against taurenmale.m2: Walk's
+//is [3333,4400], Run's [5000,5667], Stand's [6667,9333] - 1067ms, 667ms and
+//2666ms, matching this model's own moving bones) are this sequence's own
+//[start,end] window on the model's one shared, multi-minute keyframe
+//timeline - not a per-bone concept. a bone that barely moves in a given
+//sequence still gets a 2 keyframe "hold" track, but that hold's own two
+//timestamps can come from anywhere on the shared timeline (Blizzard reuses
+//one arbitrary distant pair across dozens of sequences that don't animate
+//this bone), so a hold can span minutes despite the sequence itself lasting
+//well under a second. clip_times below is clamped to this window so such a
+//hold never inflates a clip's own duration
 #define HEADER_SEQUENCES 0x1C
 #define SEQUENCE_SIZE 68
 #define SEQUENCE_ID 0
 #define SEQUENCE_VARIATION 2
+#define SEQUENCE_TIMESTAMP_START 4
+#define SEQUENCE_TIMESTAMP_END 8
 
 #define SEQUENCES_MAX 512
 #define ANIMATION_NAMES_MAX 1024
@@ -193,6 +207,8 @@ static uint32_t bone_count;
 typedef struct Sequence {
   uint32_t id;
   uint32_t variation;
+  uint32_t start_ms;
+  uint32_t end_ms;
 } Sequence;
 
 static Sequence sequences[SEQUENCES_MAX];
@@ -480,6 +496,8 @@ static int read_sequences(void) {
     const uint8_t *record = records + i * SEQUENCE_SIZE;
     sequences[i].id = read_u16(record + SEQUENCE_ID);
     sequences[i].variation = read_u16(record + SEQUENCE_VARIATION);
+    sequences[i].start_ms = read_u32(record + SEQUENCE_TIMESTAMP_START);
+    sequences[i].end_ms = read_u32(record + SEQUENCE_TIMESTAMP_END);
   }
   return 0;
 }
@@ -978,10 +996,18 @@ static void write_gltf(const char *path) {
         int floats_per = entries[t].floats_per;
 
         uint32_t clip_start_ms = read_u32(model + track->timestamps_offset + start * 4);
+        //INFO the sequence's own [start,end] is the clip's real duration; a
+        //bone's own last keyframe can land far past it (see the SEQUENCE_SIZE
+        //comment above) and must not be allowed to stretch the clip
+        float clip_duration = k < sequence_count
+                                  ? (sequences[k].end_ms - sequences[k].start_ms) / 1000.0f
+                                  : 0;
         float *clip_times = malloc(length * sizeof(float));
         for (uint32_t j = 0; j < length; j++) {
           uint32_t ms = read_u32(model + track->timestamps_offset + (start + j) * 4);
           clip_times[j] = (ms - clip_start_ms) / 1000.0f;
+          if (clip_duration > 0 && clip_times[j] > clip_duration)
+            clip_times[j] = clip_duration;
         }
         uint32_t ts_offset = (uint32_t)bin.size;
         buf_bytes(&bin, clip_times, length * sizeof(float));

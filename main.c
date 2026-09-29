@@ -20,8 +20,8 @@
 #include <math.h>
 #include <string.h>
 
-#include "pwow_camera.h"
-#include "pwow_input.h"
+#include "camera.h"
+#include "input.h"
 
 #define PLAYER_MODEL_PATH "data/character/tauren/male/taurenmale.glb"
 #define PLAYER_SKIN_PATH "data/character/tauren/male/taurenmaleskin00_00.png"
@@ -506,10 +506,19 @@ static void update_live_character(float seconds) {
   if (in.strafe_left)
     glm_vec3_sub(direction, right, direction);
 
-  if (glm_vec3_norm(direction) > 0.001f) {
+  bool moving = glm_vec3_norm(direction) > 0.001f;
+  if (moving) {
     glm_vec3_normalize(direction);
     glm_vec3_muladds(direction, CHARACTER_MOVE_SPEED * seconds, player_position);
   }
+
+  //CHARACTER_MOVE_SPEED (7 yd/s) is the game's own running speed, not its
+  //walk speed, so forward/strafe motion plays "Run"; there is no
+  //"Runbackwards" clip in taurenmale.glb, so backing up plays "Walkbackwards"
+  const char *locomotion_animation = "Stand";
+  if (moving)
+    locomotion_animation = (in.backward && !in.forward) ? "Walkbackwards" : "Run";
+  play_animation_by_name(&player_skin, locomotion_animation, true);
 
   character_follow_ground();
 
@@ -521,7 +530,7 @@ static void pwow_update() {
   if (live_mode) {
     update_live_character(delta_time);
     stream_world();
-    play_animation_list();
+    play_animation_list(delta_time);
     return;
   }
 
@@ -538,7 +547,7 @@ static void pwow_update() {
 
   camera_update(&main_camera);
 
-  play_animation_list();
+  play_animation_list(delta_time);
 }
 
 static void pwow_input() {
