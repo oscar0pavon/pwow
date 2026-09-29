@@ -892,6 +892,30 @@ static void write_gltf(const char *path) {
       if (track->ranges_count > anim_count)
         anim_count = track->ranges_count;
 
+      //INFO the model's translation track stores each keyframe as a delta
+      //off the bone's own pivot, not the node-space (parent-relative)
+      //translation a glTF channel replaces the node's rest translation
+      //with. the rest translation two bones down encodes both the pivot
+      //offset (bone->pivot - parent->pivot) and this delta; leaving the
+      //offset out here, as this did before, threw it away every keyframe
+      //and left an animated bone's local translation as just the delta -
+      //a few hundredths of a unit - collapsing the whole chain below it
+      //toward its parent. played back, taurenmale.glb's Stand alone (one
+      //keyframed bone, the pelvis) pulled the model from a 2.38 unit tall
+      //standing pose down to a -1.21..0.71 heap: the animation looked like
+      //it had thrown the character on the ground because every one of its
+      //bones effectively had.
+      float pivot_offset[3] = {0, 0, 0};
+      if (t == 0) {
+        if (bones[i].parent >= 0) {
+          Bone *parent = &bones[bones[i].parent];
+          for (int a = 0; a < 3; a++)
+            pivot_offset[a] = bones[i].pivot[a] - parent->pivot[a];
+        } else {
+          memcpy(pivot_offset, bones[i].pivot, sizeof(pivot_offset));
+        }
+      }
+
       float *values = malloc((size_t)track->count * floats_per[t] * sizeof(float));
       for (uint32_t k = 0; k < track->count; k++) {
         const float *raw = (const float *)(model + track->values_offset +
@@ -901,8 +925,11 @@ static void write_gltf(const char *path) {
           remap_quat(raw, dst);
         else if (t == 2)
           remap_scale(raw, dst);
-        else
+        else {
           remap_axis(raw, dst);
+          for (int a = 0; a < 3; a++)
+            dst[a] += pivot_offset[a];
+        }
       }
       uint32_t val_offset = (uint32_t)bin.size;
       buf_bytes(&bin, values, (size_t)track->count * floats_per[t] * sizeof(float));
