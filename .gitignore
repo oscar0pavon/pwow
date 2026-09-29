@@ -3,6 +3,7 @@ adt2wot
 wmo2wwb
 m22wwb
 m22gltf
+test_auth
 
 # textures converted from the game's own data, not ours to distribute
 data/
