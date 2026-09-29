@@ -6,8 +6,8 @@ include $(WORKDIR)/include.make
 
 all: pwow adt2wot wmo2wwb m22wwb m22gltf test_auth
 
-pwow: pwow.c $(WORKDIR)/lib/libpengine.a
-	$(CC) $(CFLAGS) $(GLOBAL_DEFINE) $(CINCLUDES) pwow.c \
+pwow: pwow.c pwow_camera.c pwow_input.c $(WORKDIR)/lib/libpengine.a
+	$(CC) $(CFLAGS) $(GLOBAL_DEFINE) $(CINCLUDES) pwow.c pwow_camera.c pwow_input.c \
 		-L$(WORKDIR)/lib -lpengine $(LIBRARIES) -o pwow
 
 test_auth: tools/test_auth.c $(WORKDIR)/lib/libpengine.a

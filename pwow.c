@@ -20,6 +20,9 @@
 #include <math.h>
 #include <string.h>
 
+#include "pwow_camera.h"
+#include "pwow_input.h"
+
 #define PLAYER_MODEL_PATH "data/character/tauren/male/taurenmale.glb"
 #define PLAYER_SKIN_PATH "data/character/tauren/male/taurenmaleskin00_00.png"
 #define PLAYER_ANIMATION "Stand"
@@ -51,6 +54,16 @@
 #define MOVE_SPEED 60.0f
 #define FAST_MOVE_FACTOR 4.0f
 
+//live mode: the character's own run speed and turn rate, and the camera's
+//distance and height behind it - WoW's own WOW_RUN_SPEED/WOW_TURN_SPEED
+//(WoWee's CameraController) are 7 yards/s and 180 degrees/s; kept a little
+//slower to turn here since there is no mouse-look to correct an overshoot
+#define CHARACTER_MOVE_SPEED 7.0f
+#define CHARACTER_TURN_SPEED_DEGREES 120.0f
+#define CHARACTER_CAMERA_DISTANCE 8.0f
+#define CHARACTER_CAMERA_PIVOT_HEIGHT 1.8f
+#define CHARACTER_CAMERA_PITCH_DEGREES -12.0f
+
 //on foot: a human's eye height and a run, in yards and yards a second, and how
 //quickly the camera settles onto the ground as it moves over it
 #define EYE_HEIGHT 2.0f
@@ -77,6 +90,12 @@ static PTerrainWorld world;
 static bool live_mode;
 static float live_player_z;
 static float live_player_facing_degrees;
+
+//the character's own position/facing in live mode, updated every frame by
+//input; the orbit camera that follows it
+static vec3 player_position;
+static float player_facing;
+static PwowOrbitCamera player_camera;
 
 static PModel player_model;
 static PSkin player_skin;
@@ -186,8 +205,9 @@ static void player_load() {
 //m22gltf bakes a -90 degree turn about X into every position, normal and
 //bone (remap_axis, tools/m22gltf.c) to go from the model's own Z-up axes to
 //glTF's Y-up convention, since every glTF consumer assumes Y-up. Undoing
-//that here is what stands the tauren upright in pwow's Z-up world instead
-//of lying on its back
+//that means the inverse, +90 about X, here - using -90 again looked close
+//(the model stood in-plane instead of lying flat) but was 180 degrees off
+//from upright, standing the tauren on its head
 //facing has to turn the model round its own now-vertical axis, which only
 //exists after the up-axis fix runs - pe_model_transform() then pe_model_rotate()
 //would append the facing turn on the right of the existing matrix instead,
@@ -199,7 +219,7 @@ static void player_place(vec3 position, float facing_degrees) {
   glm_mat4_identity(player_model.model_mat);
   glm_translate(player_model.model_mat, position);
   glm_rotate(player_model.model_mat, glm_rad(facing_degrees), (vec3){0, 0, 1});
-  glm_rotate(player_model.model_mat, glm_rad(-90.0f), (vec3){1, 0, 0});
+  glm_rotate(player_model.model_mat, glm_rad(90.0f), (vec3){1, 0, 0});
   glm_vec3_copy(position, player_model.position);
 }
 
@@ -253,13 +273,9 @@ static void pwow_init() {
 
   vec3 position;
   if (live_mode) {
-    //third person, well back and up from the character rather than
-    //colocated with it - the default yaw looks toward -X, so back is +X.
-    //pitch steepened to actually look down at something this much lower
-    position[0] = start_x + 15.0f;
+    position[0] = start_x;
     position[1] = start_y;
-    position[2] = live_player_z + 10.0f;
-    pitch = -0.5f;
+    position[2] = live_player_z;
     fill_world_around(position);
   } else {
     start_over_ground(position);
@@ -271,17 +287,20 @@ static void pwow_init() {
     exit(1);
   }
 
-  place_camera(position);
-
   player_load();
-  vec3 player_position;
-  float player_facing;
+
   if (live_mode) {
-    player_position[0] = start_x;
-    player_position[1] = start_y;
-    player_position[2] = live_player_z;
+    glm_vec3_copy(position, player_position);
     player_facing = live_player_facing_degrees;
+    player_place(player_position, player_facing);
+
+    camera_init(&main_camera);
+    pwow_camera_init(&player_camera, player_facing, CHARACTER_CAMERA_PITCH_DEGREES,
+                     CHARACTER_CAMERA_DISTANCE, CHARACTER_CAMERA_PIVOT_HEIGHT);
+    pwow_camera_update(&player_camera, &main_camera, player_position, 1.0f / 60.0f);
   } else {
+    place_camera(position);
+
     player_position[0] = position[0] - 15.0f;
     player_position[1] = position[1];
     float ground = 0;
@@ -289,8 +308,8 @@ static void pwow_init() {
                               &ground);
     player_position[2] = ground;
     player_facing = 0.0f;
+    player_place(player_position, player_facing);
   }
-  player_place(player_position, player_facing);
 
   pe_vk_draw_scene = &pwow_draw_scene;
 }
@@ -404,7 +423,60 @@ static float movement_speed() {
   return input.SHIFT.pressed ? base * fast : base;
 }
 
+//moves the character relative to its own facing (forward is whichever way it
+//is turned, not where the camera looks - WoWee's moveFollowedCharacter()
+//does the same split), snaps its feet to the ground, then lets the orbit
+//camera catch up. no wall push or building floors yet, unlike the fly
+//camera's own keep_out_of_walls()/follow_ground() - the character can walk
+//through what the camera cannot
+static void update_live_character(float seconds) {
+  PwowFrameInput in;
+  pwow_input_read(&in);
+
+  if (in.turn_left)
+    player_facing += CHARACTER_TURN_SPEED_DEGREES * seconds;
+  if (in.turn_right)
+    player_facing -= CHARACTER_TURN_SPEED_DEGREES * seconds;
+
+  float facing_rad = glm_rad(player_facing);
+  vec3 forward = {cosf(facing_rad), sinf(facing_rad), 0};
+  vec3 right;
+  glm_vec3_cross((vec3){0, 0, 1}, forward, right);
+  glm_vec3_normalize(right);
+
+  vec3 direction;
+  glm_vec3_zero(direction);
+  if (in.forward)
+    glm_vec3_add(direction, forward, direction);
+  if (in.backward)
+    glm_vec3_sub(direction, forward, direction);
+  if (in.strafe_right)
+    glm_vec3_add(direction, right, direction);
+  if (in.strafe_left)
+    glm_vec3_sub(direction, right, direction);
+
+  if (glm_vec3_norm(direction) > 0.001f) {
+    glm_vec3_normalize(direction);
+    glm_vec3_muladds(direction, CHARACTER_MOVE_SPEED * seconds, player_position);
+  }
+
+  float ground = 0;
+  if (pe_terrain_world_height_at(&world, player_position[0], player_position[1],
+                                 &ground))
+    player_position[2] = ground;
+
+  player_place(player_position, player_facing);
+  pwow_camera_update(&player_camera, &main_camera, player_position, seconds);
+}
+
 static void pwow_update() {
+  if (live_mode) {
+    update_live_character(delta_time);
+    stream_world();
+    play_animation_list();
+    return;
+  }
+
   if (key_released(&input.TAB))
     walking = !walking;
 
