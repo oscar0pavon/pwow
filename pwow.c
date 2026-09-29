@@ -1,7 +1,26 @@
+#include <engine/animation/animation.h>
 #include <engine/engine.h>
+#include <engine/files.h>
+#include <engine/images.h>
+#include <engine/model.h>
+#include <engine/renderer/descriptor_set.h>
+#include <engine/renderer/draw.h>
+#include <engine/renderer/shaders.h>
+#include <engine/renderer/uniform_buffer.h>
+#include <engine/renderer/vulkan.h>
+#include <engine/skeletal.h>
 #include <engine/terrain/terrain_world.h>
 #include <engine/time.h>
 #include <engine/window_manager.h>
+#include <engine/wowauth/wowauth.h>
+#include <engine/wowauth/wowworld.h>
+
+#include <math.h>
+#include <string.h>
+
+#define PLAYER_MODEL_PATH "data/character/tauren/male/taurenmale.glb"
+#define PLAYER_SKIN_PATH "data/character/tauren/male/taurenmaleskin00_00.png"
+#define PLAYER_ANIMATION "Stand"
 
 #define DATA_DIRECTORY "data"
 
@@ -49,6 +68,17 @@
 #define PITCH_LIMIT 1.4f
 
 static PTerrainWorld world;
+
+//set by live_login() when pwow was started with --live, and read by
+//pwow_init() instead of the ground-height guess start_over_ground() makes
+//for the static tile viewer
+static bool live_mode;
+static float live_player_z;
+static float live_player_facing_degrees;
+
+static PModel player_model;
+static PSkin player_skin;
+static PShader player_shader;
 
 static const char *map = DEFAULT_MAP;
 static int start_tile_x = DEFAULT_TILE_X;
@@ -100,6 +130,80 @@ static void place_camera(const vec3 position) {
   update_camera_direction();
 }
 
+//loads the player's own character model, skinned so it can stand in a
+//normal pose rather than the flat T-pose its raw vertices would give: the
+//descriptor sets pe_vk_load_skin() makes are plain-layout ones (the same
+//call pe_vk_load_model() always makes), so they are remade here against the
+//skinned layout, which is the one skinned.vert's joint matrix buffer and
+//diffuse_frag's texture actually need
+static void player_load() {
+  PCreateShaderInfo shader_info;
+  ZERO(shader_info);
+  shader_info.out_shader = &player_shader;
+  shader_info.vertex_path = file_skinned_spv;
+  shader_info.fragment_path = file_diffuse_frag_spv;
+  shader_info.layout = pe_vk_pipeline_layout_skinned;
+  pe_vk_create_shader(&shader_info);
+
+  pe_vk_load_skin(&player_skin, &player_model, PLAYER_MODEL_PATH);
+  player_model.shader = player_shader;
+
+  pe_load_texture(PLAYER_SKIN_PATH, &player_model.texture);
+
+  pe_vk_create_descriptor_sets(&player_model, pe_vk_descriptor_set_layout_skinned,
+                               &main_render_target);
+  pe_vk_skin_create_storage_buffers(&player_skin);
+  pe_vk_descriptor_skinned_update(&player_model, &player_skin,
+                                  &main_render_target);
+
+  play_animation_by_name(&player_skin, PLAYER_ANIMATION, true);
+}
+
+//m22gltf bakes a -90 degree turn about X into every position, normal and
+//bone (remap_axis, tools/m22gltf.c) to go from the model's own Z-up axes to
+//glTF's Y-up convention, since every glTF consumer assumes Y-up. Undoing
+//that here is what stands the tauren upright in pwow's Z-up world instead
+//of lying on its back
+//facing has to turn the model round its own now-vertical axis, which only
+//exists after the up-axis fix runs - pe_model_transform() then pe_model_rotate()
+//would append the facing turn on the right of the existing matrix instead,
+//rotating the point round the glTF file's own Z axis (m22gltf's negated
+//native Y, not up at all) before the up-axis fix ever touches it. built
+//directly instead, in the order that actually matches how a point is meant
+//to move: turn to face first, stand it upright second, then place it
+static void player_place(vec3 position, float facing_degrees) {
+  glm_mat4_identity(player_model.model_mat);
+  glm_translate(player_model.model_mat, position);
+  glm_rotate(player_model.model_mat, glm_rad(facing_degrees), (vec3){0, 0, 1});
+  glm_rotate(player_model.model_mat, glm_rad(-90.0f), (vec3){1, 0, 0});
+  glm_vec3_copy(position, player_model.position);
+}
+
+static void player_draw(VkCommandBuffer *command, uint32_t image_index) {
+  PUniformBufferObject *ubo = &player_model.uniform_buffer_object;
+  glm_mat4_copy(player_model.model_mat, ubo->model);
+  glm_mat4_copy(main_camera.view, ubo->view);
+  glm_mat4_copy(main_camera.projection, ubo->projection);
+
+  //a point far along the terrain's own sun direction, since skinned.vert
+  //treats this as a point to shade towards rather than a direction
+  vec3 light_position;
+  glm_vec3_copy(player_model.model_mat[3], light_position);
+  glm_vec3_muladds((vec3){0.4f, -0.3f, 0.8f}, 5000.0f, light_position);
+  glm_vec4(light_position, 1, ubo->light_position);
+
+  pe_vk_send_uniform_buffer(&player_model, image_index);
+  pe_vk_skin_send_storage_buffer(&player_skin, image_index);
+
+  PDrawModelCommand draw;
+  ZERO(draw);
+  draw.model = &player_model;
+  draw.layout = pe_vk_pipeline_layout_skinned;
+  draw.command_buffer = *command;
+  draw.image_index = image_index;
+  pe_vk_draw_model(&draw);
+}
+
 static void fill_lighting(PTerrainFrame *frame) {
   glm_vec4_copy((vec4){-0.4f, 0.3f, -0.8f, 0}, frame->light_direction);
   glm_vec4_copy((vec4){0.9f, 0.85f, 0.75f, 1}, frame->light_color);
@@ -117,13 +221,25 @@ static void pwow_draw_scene(PRenderTarget *target, VkCommandBuffer *command,
   fill_lighting(&frame);
 
   pe_vk_terrain_world_draw(&world, &frame, *command, image_index);
+  player_draw(command, image_index);
 }
 
 static void pwow_init() {
   pe_vk_terrain_world_create(&world);
 
   vec3 position;
-  start_over_ground(position);
+  if (live_mode) {
+    //third person, well back and up from the character rather than
+    //colocated with it - the default yaw looks toward -X, so back is +X.
+    //pitch steepened to actually look down at something this much lower
+    position[0] = start_x + 15.0f;
+    position[1] = start_y;
+    position[2] = live_player_z + 10.0f;
+    pitch = -0.5f;
+    fill_world_around(position);
+  } else {
+    start_over_ground(position);
+  }
 
   if (world.tile_count == 0) {
     LOG("pwow: no tiles in %s, run ./prepare_tile.sh %s %d %d 2\n",
@@ -132,6 +248,26 @@ static void pwow_init() {
   }
 
   place_camera(position);
+
+  player_load();
+  vec3 player_position;
+  float player_facing;
+  if (live_mode) {
+    player_position[0] = start_x;
+    player_position[1] = start_y;
+    player_position[2] = live_player_z;
+    player_facing = live_player_facing_degrees;
+  } else {
+    player_position[0] = position[0] - 15.0f;
+    player_position[1] = position[1];
+    float ground = 0;
+    pe_terrain_world_height_at(&world, player_position[0], player_position[1],
+                              &ground);
+    player_position[2] = ground;
+    player_facing = 0.0f;
+  }
+  player_place(player_position, player_facing);
+
   pe_vk_draw_scene = &pwow_draw_scene;
 }
 
@@ -257,6 +393,8 @@ static void pwow_update() {
     follow_ground(delta_time);
 
   camera_update(&main_camera);
+
+  play_animation_list();
 }
 
 static void pwow_input() {
@@ -274,11 +412,117 @@ static void read_start_tile(char **arguments) {
             PE_TERRAIN_TILE_SIZE;
 }
 
+//vmangos's own map ids for the two continents prepare_tile.sh knows how to
+//convert. any other map logs in fine but has no data pwow can stream
+static const char *map_name_for_id(u32 map_id) {
+  switch (map_id) {
+  case 0:
+    return "azeroth";
+  case 1:
+    return "kalimdor";
+  default:
+    return NULL;
+  }
+}
+
+//logs into a real vmangos realmd/mangosd and pulls the live character
+//position out of SMSG_LOGIN_VERIFY_WORLD, converting it into the axes and
+//map name pwow already streams terrain in. exits the process on any
+//failure, same as the "no tiles converted" check pwow_init already makes -
+//there is nothing useful pwow can render without a real position here
+static void live_login(const char *host, int port, const char *account,
+                       const char *password) {
+  PWowAuthResult auth;
+  if (!pe_wowauth_login(host, port, account, password, &auth)) {
+    fprintf(stderr, "auth failed: %s\n", auth.error);
+    exit(1);
+  }
+  if (auth.realm_count == 0) {
+    fprintf(stderr, "no realms on this auth server\n");
+    exit(1);
+  }
+
+  PWowRealm *realm = &auth.realms[0];
+  char realm_host[64];
+  char *colon = strchr(realm->address, ':');
+  if (!colon) {
+    fprintf(stderr, "realm address '%s' has no port\n", realm->address);
+    exit(1);
+  }
+  snprintf(realm_host, sizeof(realm_host), "%.*s",
+          (int)(colon - realm->address), realm->address);
+  int realm_port = atoi(colon + 1);
+
+  PWowWorld world_conn;
+  char error[PE_WOWWORLD_ERROR_MAX];
+  if (!pe_wowworld_connect(realm_host, realm_port, account, auth.session_key,
+                           5875, realm->id, &world_conn, error,
+                           sizeof(error))) {
+    fprintf(stderr, "world connect failed: %s\n", error);
+    exit(1);
+  }
+
+  PWowCharacter characters[PE_WOWWORLD_CHARACTERS_MAX];
+  int char_count = 0;
+  if (!pe_wowworld_char_enum(&world_conn, characters,
+                             PE_WOWWORLD_CHARACTERS_MAX, &char_count, error,
+                             sizeof(error))) {
+    fprintf(stderr, "char enum failed: %s\n", error);
+    exit(1);
+  }
+  if (char_count == 0) {
+    fprintf(stderr, "account '%s' has no characters\n", account);
+    exit(1);
+  }
+
+  PWowLoginResult login;
+  if (!pe_wowworld_player_login(&world_conn, characters[0].guid, &login,
+                                error, sizeof(error))) {
+    fprintf(stderr, "player login failed: %s\n", error);
+    exit(1);
+  }
+  pe_wowworld_close(&world_conn);
+
+  const char *login_map = map_name_for_id(login.map);
+  if (!login_map) {
+    fprintf(stderr,
+           "'%s' is on map id %u, which pwow has no converter output for "
+           "(only 0=azeroth and 1=kalimdor)\n",
+           characters[0].name, login.map);
+    exit(1);
+  }
+  map = login_map;
+
+  //game data is X north, Y west; pwow's world is X north, Y east
+  //(pe_terrain_point_y makes the same flip for terrain read from disk)
+  start_x = login.x;
+  start_y = -login.y;
+  live_player_z = login.z;
+  live_player_facing_degrees = glm_deg(login.o);
+
+  //inverse of read_start_tile()'s own formula: world x comes from tile_y
+  //(rows run north-south) and world y from tile_x (columns run east-west),
+  //so recovering the tile indices swaps them back the same way
+  start_tile_x = (int)lroundf(PE_TERRAIN_MAP_CENTRE_TILE - 0.5f +
+                              start_y / PE_TERRAIN_TILE_SIZE);
+  start_tile_y = (int)lroundf(PE_TERRAIN_MAP_CENTRE_TILE - 0.5f -
+                              start_x / PE_TERRAIN_TILE_SIZE);
+
+  LOG("pwow: logged in as %s, map=%s position=(%.2f, %.2f, %.2f)\n",
+      characters[0].name, map, start_x, start_y, live_player_z);
+}
+
 int main(int argc, char **argv) {
-  if (argc == 4)
+  if (argc == 6 && strcmp(argv[1], "--live") == 0) {
+    live_mode = true;
+    live_login(argv[2], atoi(argv[3]), argv[4], argv[5]);
+  } else if (argc == 4) {
     read_start_tile(argv + 1);
-  else if (argc != 1) {
-    fprintf(stderr, "usage: %s [map tile_x tile_y]\n", argv[0]);
+  } else if (argc != 1) {
+    fprintf(stderr,
+           "usage: %s [map tile_x tile_y]\n"
+           "       %s --live <host> <port> <account> <password>\n",
+           argv[0], argv[0]);
     return 1;
   }
 
