@@ -1,10 +1,13 @@
-//exercises pengine's wowauth module against a real realmd: logs in over SRP6
-//and prints the realm list it gets back. usage: test_auth <host> <port>
-//<account> <password>
+//exercises pengine's wowauth/wowworld modules against a real realmd and
+//mangosd: logs in over SRP6, prints the realm list, then connects to the
+//first realm's world server and completes the CMSG_AUTH_SESSION handshake.
+//usage: test_auth <host> <port> <account> <password>
 #include <engine/wowauth/wowauth.h>
+#include <engine/wowauth/wowworld.h>
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 int main(int argc, char **argv) {
   if (argc != 5) {
@@ -38,6 +41,36 @@ int main(int argc, char **argv) {
            realm->name, realm->address, realm->icon, realm->flags,
            realm->population);
   }
+
+  if (result.realm_count == 0)
+    return 0;
+
+  PWowRealm *realm = &result.realms[0];
+  char realm_host[64];
+  int realm_port;
+  char *colon = strchr(realm->address, ':');
+  if (!colon) {
+    fprintf(stderr, "realm address '%s' has no port\n", realm->address);
+    return 1;
+  }
+  snprintf(realm_host, sizeof(realm_host), "%.*s",
+          (int)(colon - realm->address), realm->address);
+  realm_port = atoi(colon + 1);
+
+  printf("\nconnecting to world server %s:%d ...\n", realm_host, realm_port);
+
+  PWowWorld world;
+  char world_error[PE_WOWWORLD_ERROR_MAX];
+  bool world_ok = pe_wowworld_connect(realm_host, realm_port, account,
+                                      result.session_key, 5875, realm->id,
+                                      &world, world_error, sizeof(world_error));
+  if (!world_ok) {
+    fprintf(stderr, "world connect failed: %s\n", world_error);
+    return 1;
+  }
+
+  printf("world session established (AUTH_OK)\n");
+  pe_wowworld_close(&world);
 
   return 0;
 }
