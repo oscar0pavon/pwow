@@ -82,6 +82,11 @@
 #define TURN_SPEED 1.5f
 #define PITCH_LIMIT 1.4f
 
+//WoW-style: look only while the right button is held, so the cursor is free
+//to leave the window otherwise (pway reports absolute position, not a
+//pointer-locked delta, so nothing steers the camera while the button is up)
+#define MOUSE_LOOK_SENSITIVITY_DEGREES 0.15f
+
 static PTerrainWorld world;
 
 //set by live_login() when pwow was started with --live, and read by
@@ -111,6 +116,35 @@ static bool walking;
 
 static float yaw = GLM_PI;
 static float pitch = -0.2f;
+
+//the cursor position at the start of the current right-button drag, and
+//whether one is in progress - reset on button-up so the next press starts
+//from wherever the cursor lands rather than jumping from the last drag's end
+static float mouse_look_x;
+static float mouse_look_y;
+static bool mouse_look_active;
+
+//dx/dy in screen pixels since the last call, while the right button is held;
+//false and untouched otherwise. shared by both camera modes, which is safe
+//since only one runs per frame
+static bool mouse_look_delta(float *dx, float *dy) {
+  if (!mouse.right.pressed) {
+    mouse_look_active = false;
+    return false;
+  }
+
+  if (!mouse_look_active) {
+    mouse_look_x = mouse.x;
+    mouse_look_y = mouse.y;
+    mouse_look_active = true;
+  }
+
+  *dx = mouse.x - mouse_look_x;
+  *dy = mouse.y - mouse_look_y;
+  mouse_look_x = mouse.x;
+  mouse_look_y = mouse.y;
+  return true;
+}
 
 static void update_camera_direction() {
   main_camera.front[0] = cosf(pitch) * cosf(yaw);
@@ -425,6 +459,12 @@ static void turn_camera(float angle) {
   if (input.K.pressed)
     pitch -= angle;
 
+  float dx, dy;
+  if (mouse_look_delta(&dx, &dy)) {
+    yaw += glm_rad(dx * MOUSE_LOOK_SENSITIVITY_DEGREES);
+    pitch -= glm_rad(dy * MOUSE_LOOK_SENSITIVITY_DEGREES);
+  }
+
   pitch = glm_clamp(pitch, -PITCH_LIMIT, PITCH_LIMIT);
 }
 
@@ -523,6 +563,12 @@ static void update_live_character(float seconds) {
   character_follow_ground();
 
   player_place(player_position, player_facing);
+
+  float dx, dy;
+  if (mouse_look_delta(&dx, &dy))
+    pwow_camera_turn(&player_camera, dx * MOUSE_LOOK_SENSITIVITY_DEGREES,
+                     -dy * MOUSE_LOOK_SENSITIVITY_DEGREES);
+
   pwow_camera_update(&player_camera, &main_camera, player_position, seconds);
 }
 
