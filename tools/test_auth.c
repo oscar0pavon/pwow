@@ -70,6 +70,39 @@ int main(int argc, char **argv) {
   }
 
   printf("world session established (AUTH_OK)\n");
+
+  PWowCharacter characters[PE_WOWWORLD_CHARACTERS_MAX];
+  int char_count = 0;
+  if (!pe_wowworld_char_enum(&world, characters, PE_WOWWORLD_CHARACTERS_MAX,
+                             &char_count, world_error, sizeof(world_error))) {
+    fprintf(stderr, "char enum failed: %s\n", world_error);
+    pe_wowworld_close(&world);
+    return 1;
+  }
+
+  printf("%d character(s):\n", char_count);
+  for (int i = 0; i < char_count; i++)
+    printf("  [%llu] %s\n", (unsigned long long)characters[i].guid,
+           characters[i].name);
+
+  if (char_count == 0) {
+    pe_wowworld_close(&world);
+    return 0;
+  }
+
+  printf("\nlogging in as %s ...\n", characters[0].name);
+
+  PWowLoginResult login;
+  if (!pe_wowworld_player_login(&world, characters[0].guid, &login,
+                                world_error, sizeof(world_error))) {
+    fprintf(stderr, "player login failed: %s\n", world_error);
+    pe_wowworld_close(&world);
+    return 1;
+  }
+
+  printf("in the world: map=%u position=(%.2f, %.2f, %.2f) facing=%.2f\n",
+         login.map, login.x, login.y, login.z, login.o);
+
   pe_wowworld_close(&world);
 
   return 0;
