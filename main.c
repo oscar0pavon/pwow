@@ -16,8 +16,10 @@
 #include <engine/time.h>
 #include <engine/window_manager.h>
 #include <engine/wowauth/wowauth.h>
+#include <engine/wowauth/wowdbc.h>
 #include <engine/wowauth/wowworld.h>
 
+#include <ctype.h>
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
@@ -26,8 +28,79 @@
 #include "input.h"
 
 #define PLAYER_MODEL_PATH "data/character/tauren/male/taurenmale.glb"
-#define PLAYER_SKIN_PATH "data/character/tauren/male/taurenmaleskin00_00.png"
 #define PLAYER_ANIMATION "Stand"
+
+//CharSections.dbc, prepare_character.sh's copy of it. holds every race's
+//skin/face/hair textures; only the Tauren Male body skin (BaseSection 0) is
+//read here, since that is the only part the model has a texture slot for
+#define CHARSECTIONS_DBC_PATH "data/dbc/CharSections.dbc"
+#define CHARSECTIONS_SECTION_SKIN 0
+#define TAUREN_RACE_ID 6
+#define MALE_SEX_ID 0
+
+//stands in for the skin id SMSG_UPDATE_OBJECT would carry in PLAYER_BYTES:
+//live networking doesn't parse the player's own object update yet (see
+//TODO.md, "live client" item 1), so there is nothing to read this from
+#define PLAYER_SKIN_ID 0
+
+//CharSections.dbc's field layout is fixed across classic (confirmed against
+//dbc_layouts.json): 0 id, 1 race, 2 sex, 3 baseSection, 4 variationIndex,
+//5 colorIndex, 6 texture1, 7 texture2, 8 texture3, 9 flags
+#define CHARSECTIONS_FIELD_RACE 1
+#define CHARSECTIONS_FIELD_SEX 2
+#define CHARSECTIONS_FIELD_BASE_SECTION 3
+#define CHARSECTIONS_FIELD_COLOR_INDEX 5
+#define CHARSECTIONS_FIELD_TEXTURE1 6
+
+//m22gltf's normalise_texture_name, applied by hand to the one texture path
+//this needs: CharSections.dbc's own paths ("Character\Tauren\Male\...blp")
+//over into what prepare_character.sh actually wrote to data/
+//("character/tauren/male/...png")
+static void normalise_texture_path(char *name) {
+  for (char *c = name; *c; c++)
+    *c = *c == '\\' ? '/' : (char)tolower((unsigned char)*c);
+
+  size_t length = strlen(name);
+  if (length > 4 && strcmp(name + length - 4, ".blp") == 0)
+    strcpy(name + length - 4, ".png");
+}
+
+//scans CharSections.dbc for the Tauren Male skin row of the given colour and
+//writes its data/ path into out. falls back to skin 0 - already converted by
+//prepare_character.sh - if the DBC is missing or names no such row, since a
+//wrong skin tone beats no body texture at all
+static void resolve_player_skin_path(u8 skin_id, char *out, size_t out_size) {
+  const char *fallback = "data/character/tauren/male/taurenmaleskin00_00.png";
+  snprintf(out, out_size, "%s", fallback);
+
+  PWowDBC dbc;
+  if (!pe_wowdbc_load(CHARSECTIONS_DBC_PATH, &dbc))
+    return;
+
+  for (u32 r = 0; r < dbc.record_count; r++) {
+    if (pe_wowdbc_get_u32(&dbc, r, CHARSECTIONS_FIELD_RACE) != TAUREN_RACE_ID)
+      continue;
+    if (pe_wowdbc_get_u32(&dbc, r, CHARSECTIONS_FIELD_SEX) != MALE_SEX_ID)
+      continue;
+    if (pe_wowdbc_get_u32(&dbc, r, CHARSECTIONS_FIELD_BASE_SECTION) !=
+        CHARSECTIONS_SECTION_SKIN)
+      continue;
+    if (pe_wowdbc_get_u32(&dbc, r, CHARSECTIONS_FIELD_COLOR_INDEX) != skin_id)
+      continue;
+
+    char path[512];
+    snprintf(path, sizeof(path), "%s",
+             pe_wowdbc_get_string(&dbc, r, CHARSECTIONS_FIELD_TEXTURE1));
+    if (path[0] == '\0')
+      break;
+
+    normalise_texture_path(path);
+    snprintf(out, out_size, "data/%s", path);
+    break;
+  }
+
+  pe_wowdbc_free(&dbc);
+}
 
 #define HUD_FONT_PATH "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf"
 #define HUD_FONT_SIZE 20.0f
@@ -230,7 +303,10 @@ static void player_load() {
   pe_vk_load_skin(&player_skin, &player_model, PLAYER_MODEL_PATH);
   player_model.shader = player_shader;
 
-  pe_load_texture(PLAYER_SKIN_PATH, &player_model.texture);
+  char player_skin_path[512];
+  resolve_player_skin_path(PLAYER_SKIN_ID, player_skin_path,
+                           sizeof(player_skin_path));
+  pe_load_texture(player_skin_path, &player_model.texture);
 
   pe_vk_create_descriptor_sets(&player_model, pe_vk_descriptor_set_layout_skinned,
                                &main_render_target);

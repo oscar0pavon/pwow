@@ -100,9 +100,23 @@ in `m22gltf.c`). Remaining gaps, in the order they'll probably bite:
    facing away from the single fixed light direction is near-black, and
    third-person view mostly looks at the character's back. Needs either a
    better light direction or a higher ambient floor.
-2. Only the Tauren male model + one skin texture exists
-   (`data/character/tauren/male/`). Other races/genders/skin tones would each
-   need their own `m22gltf` conversion + texture.
+2. Only the Tauren male model exists (`data/character/tauren/male/`). Other
+   races/genders would each need their own `m22gltf` conversion, and their own
+   `prepare_character.sh`-style skin-texture conversion.
+3. **`CharSections.dbc` body-skin resolution is done; face, hair and the other
+   races/sexes are not.** `pengine`'s `wowauth/wowdbc.c` is a minimal WDBC
+   reader (record/field access only, no CSV/JSON fallback - pwow only ever
+   reads real DBCs); `main.c`'s `resolve_player_skin_path()` scans
+   `data/dbc/CharSections.dbc` (copied by `prepare_character.sh`, which also
+   converts all 19 Tauren Male skin tones) for the Tauren Male skin row
+   (`BaseSection` 0) matching `PLAYER_SKIN_ID`, and `player_load()` loads
+   whichever PNG that resolves to instead of a hardcoded path. `PLAYER_SKIN_ID`
+   is itself still a `#define` stand-in for the skin id `PLAYER_BYTES` would
+   carry (see live-client item 1: nothing parses the player's own object
+   update yet, so there is nothing to unpack `PLAYER_BYTES` from). Left for
+   later, following WoWee's `char_sections.cpp` as the reference: face and hair
+   texture rows (`BaseSection` 1 and 3), and the same resolution for every
+   other race/sex once their models and skin textures are converted.
 
 ## Engine/tooling cleanup
 
