@@ -7,8 +7,11 @@
 #include <engine/model.h>
 #include <engine/renderer/descriptor_set.h>
 #include <engine/renderer/draw.h>
+#include <engine/renderer/pipeline.h>
 #include <engine/renderer/shaders.h>
 #include <engine/renderer/uniform_buffer.h>
+#include <engine/renderer/vk_vertex.h>
+#include <engine/renderer/vulkan.h>
 #include <engine/wowauth/wowdbc.h>
 
 #include <ctype.h>
@@ -167,18 +170,30 @@ static PModel *find_or_load_template(const ResolvedDisplay *resolved) {
   CreatureTemplate *t = &creature_templates[creature_template_count++];
   snprintf(t->glb_path, sizeof(t->glb_path), "%s", resolved->glb_path);
 
-  //pe_vk_load_model() already builds the plain (uniform buffer + texture)
-  //descriptor pool/sets - the same layout pe_vk_model_instance() copies
-  //from, so a static creature mesh needs nothing skinned.vert's player path
-  //does (no joint storage buffer, no second descriptor-set remake)
+  //pe_vk_load_model() builds the mesh, buffers and a descriptor pool/sets of
+  //its own, but always against pe_vk_descriptor_set_layout - the uniform-
+  //buffer-only layout, with no texture binding at all. model.c's loader
+  //fills model->texture with the glb's own baked-in material texture as it
+  //parses the mesh (pe_load_material_texture()), so that part is already
+  //done by the time this returns; what isn't done is a descriptor set that
+  //actually points at it. Same fix as player_load() applies to the skinned
+  //path: throw away the plain sets pe_vk_load_model() made and remake them
+  //against the textured layout, which diffuse_frag's sampler at binding 1
+  //actually needs - skipping this left the sampler reading whatever
+  //uninitialised memory the unwritten binding happened to hold, which is
+  //what the corrupted, noisy creature textures actually were
   pe_vk_load_model(&t->model, t->glb_path);
   t->model.shader = creature_shader;
 
   //present only when the model's own texture slot is a replaceable type
-  //m22gltf leaves unresolved (model_texture(), m22gltf.c) - otherwise the
-  //glb's own baked-in material texture is already correct
+  //m22gltf leaves unresolved (model_texture(), m22gltf.c) - a display's own
+  //texture variation, when there is one, overrides the glb's baked-in look
   if (resolved->texture_path[0] != '\0')
     pe_load_texture(resolved->texture_path, &t->model.texture);
+
+  pe_vk_create_descriptor_sets(&t->model, pe_vk_descriptor_set_layout_with_texture,
+                               &main_render_target);
+  pe_vk_descriptor_with_image_update(&t->model, &main_render_target);
 
   return &t->model;
 }
@@ -215,18 +230,37 @@ void creatures_init(void) {
   shader_info.out_shader = &creature_shader;
   shader_info.vertex_path = file_diffuse_vert_spv;
   shader_info.fragment_path = file_diffuse_frag_spv;
-  //pe_vk_pipeline_layout is declared (descriptor_set.h) but never actually
-  //created anywhere in the engine - nothing has ever used it, since
-  //pe_vk_load_model()'s own plain descriptor sets are always either thrown
-  //away and rebuilt skinned (the player) or never paired with a real
-  //pipeline before this. pe_vk_pipeline_layout_with_descriptors is the one
-  //that's actually wired up (vulkan.c) against the same
-  //pe_vk_descriptor_set_layout pe_vk_load_model() uses - confirmed already
-  //working via gui.c's button quads, which is why it's used here instead
-  shader_info.layout = pe_vk_pipeline_layout_with_descriptors;
-  //vertex_input left NULL: the engine's default (position + uv) is exactly
-  //what the plain diffuse shader reads, same as any other untextured/
-  //textured static model
+  //pe_vk_pipeline_layout_with_descriptors (used here before) is built
+  //against pe_vk_descriptor_set_layout, which is uniform-buffer-only - no
+  //texture binding at all (it's what gui.c's flat-colour button quads
+  //pair it with, and they sample no texture). diffuse_frag.frag samples a
+  //sampler2D at binding 1, so that pairing left the pipeline's shader
+  //interface naming a binding the layout never declared. pe_vk_pipeline_
+  //layout3 is the one actually built (vulkan.c) against
+  //pe_vk_descriptor_set_layout_with_texture, which does declare it, and
+  //which find_or_load_template() below now allocates its descriptor sets
+  //from to match
+  shader_info.layout = pe_vk_pipeline_layout3;
+
+  //vertex_input left NULL gets the engine's default (position + uv only,
+  //shaders.c), but diffuse_vert.vert also declares color (location 1,
+  //unused - dead input) and normal (location 2, feeds the diffuse term) -
+  //the same gap player_load() hit for skinned.vert (VUID-VkGraphicsPipeline
+  //CreateInfo-Input-07904) and had to build a real vertex input for. Left
+  //as the default here, normal read garbage, so a creature's per vertex
+  //diffuse lighting was as undefined as its texture sampling was before the
+  //descriptor sets above were fixed
+  PVertexAtrributes creature_attributes;
+  ZERO(creature_attributes);
+  creature_attributes.has_attributes = true;
+  creature_attributes.position = true;
+  creature_attributes.color = true;
+  creature_attributes.normal = true;
+  creature_attributes.uv = true;
+  VkPipelineVertexInputStateCreateInfo creature_vertex_input =
+      pe_vk_pipeline_get_default_vertex_input(&creature_attributes);
+  shader_info.vertex_input = &creature_vertex_input;
+
   pe_vk_create_shader(&shader_info);
 }
 
@@ -262,7 +296,7 @@ void creatures_sync(const PWowObjectState *npc_state) {
       if (!template)
         continue;
 
-      pe_vk_model_instance(&creature_instances[slot].model, template);
+      pe_vk_model_instance_textured(&creature_instances[slot].model, template);
       creature_instances[slot].guid = creature->guid;
       creature_instances[slot].used = true;
     }
@@ -313,7 +347,7 @@ void creatures_draw(VkCommandBuffer *command, uint32_t image_index,
     PDrawModelCommand draw;
     ZERO(draw);
     draw.model = instance;
-    draw.layout = pe_vk_pipeline_layout_with_descriptors;
+    draw.layout = pe_vk_pipeline_layout3;
     draw.command_buffer = *command;
     draw.image_index = image_index;
     pe_vk_draw_model(&draw);
