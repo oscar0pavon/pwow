@@ -61,9 +61,16 @@ history, credentials and file:line references behind these items.
    hair resolution and likely new race/gender model conversions beyond the
    one Tauren-male model that exists today - a separate, much bigger feature,
    deliberately out of scope for item 2.
-4. Tune live-character feel by hand: `CHARACTER_MOVE_SPEED`,
-   `CHARACTER_TURN_SPEED_DEGREES`, camera distance (top of `main.c`) — never
-   actually played with, only reasoned about.
+4. **Done**: right mouse button now turns the character to face wherever the
+   camera looks, and releasing it lets J/L turn the character and camera
+   together, instead of the two staying fully independent — WoWee's
+   `CameraController::update()` (`cameraDrivesFacing`) is the reference,
+   `update_live_character()` in `main.c` is the port. Verified it builds and
+   runs against the live server (character and NPCs render at Camp Narache);
+   not verified by an actual mouse drag, since there is no input-injection
+   tool in this environment to drive one into the running window.
+   `CHARACTER_MOVE_SPEED`, `CHARACTER_TURN_SPEED_DEGREES`, camera distance
+   (top of `main.c`) are still untuned by hand.
 5. Character creation (`CMSG_CHAR_CREATE`) isn't ported — the one test
    character was made with the real WoWee client. Only needed if pwow should
    be able to create a character itself.

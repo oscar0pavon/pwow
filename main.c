@@ -678,10 +678,26 @@ static void update_live_character(float seconds) {
   PwowFrameInput in;
   pwow_input_read(&in);
 
-  if (in.turn_left)
-    player_facing += CHARACTER_TURN_SPEED_DEGREES * seconds;
-  if (in.turn_right)
-    player_facing -= CHARACTER_TURN_SPEED_DEGREES * seconds;
+  float dx, dy;
+  if (mouse_look_delta(&dx, &dy))
+    pwow_camera_turn(&player_camera, dx * MOUSE_LOOK_SENSITIVITY_DEGREES,
+                     -dy * MOUSE_LOOK_SENSITIVITY_DEGREES);
+
+  //WoWee's CameraController::update() calls this cameraDrivesFacing: held,
+  //the right mouse button turns the character to face wherever the camera
+  //looks, so walking forward goes where the view points, the way it does in
+  //retail. Released, J/L turn the character directly and the camera comes
+  //along with it rather than staying at a fixed offset behind a facing that
+  //just moved out from under it
+  if (mouse.right.pressed) {
+    player_facing = player_camera.yaw;
+  } else {
+    if (in.turn_left)
+      player_facing += CHARACTER_TURN_SPEED_DEGREES * seconds;
+    if (in.turn_right)
+      player_facing -= CHARACTER_TURN_SPEED_DEGREES * seconds;
+    player_camera.yaw = player_facing;
+  }
 
   float facing_rad = glm_rad(player_facing);
   vec3 forward = {cosf(facing_rad), sinf(facing_rad), 0};
@@ -717,11 +733,6 @@ static void update_live_character(float seconds) {
   character_follow_ground();
 
   player_place(player_position, player_facing);
-
-  float dx, dy;
-  if (mouse_look_delta(&dx, &dy))
-    pwow_camera_turn(&player_camera, dx * MOUSE_LOOK_SENSITIVITY_DEGREES,
-                     -dy * MOUSE_LOOK_SENSITIVITY_DEGREES);
 
   pwow_camera_update(&player_camera, &main_camera, player_position, seconds);
 }
