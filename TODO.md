@@ -117,6 +117,30 @@ in `m22gltf.c`). Remaining gaps, in the order they'll probably bite:
    later, following WoWee's `char_sections.cpp` as the reference: face and hair
    texture rows (`BaseSection` 1 and 3), and the same resolution for every
    other race/sex once their models and skin textures are converted.
+4. **No equipment rendering at all — a live character stands in whatever the
+   base model+geoset defaults draw, never what is actually in its equipped
+   slots.** Checked against a real WoW.exe screenshot of a Tauren Warrior:
+   the belt, bracers, pants and the weapon on its back are all worn items, and
+   none of them have any code path here. Two smaller gaps came up in the same
+   comparison and are cheap to chase first: the fur reads solid black at
+   `PLAYER_SKIN_ID 0` where the reference is a lighter grey-blue - probably
+   just a different skin id, or the Tauren male fur is legitimately close to
+   black and it is the fur/skin *shading* (see item 1) making it read as a
+   flat silhouette - and the reference has a small dark mane tuft between the
+   horns that this model may or may not carry; worth checking whether it is
+   one of the geosets `pe_primitive_is_default` (`pengine/src/engine/model.c`)
+   now omits for having no bare variant (see item 3's commit history there)
+   before assuming it is simply missing from the conversion.
+   Equipment itself is the real gap and a much bigger feature: it needs (a)
+   knowing what is in each equipped slot, which live networking does not
+   parse yet (same networking gap as live-client item 1) or a vmangos
+   `character_inventory`/`item_instance` DB read as a static fallback; (b) an
+   `ItemDisplayInfo.dbc` reader (`wowauth/wowdbc.c` generalizes to this, it is
+   not CharSections-specific) to turn an item id into its model/texture and
+   which geoset group it drives; (c) per-slot geoset selection and texture
+   compositing onto the model the way WoWee's `entity_spawner_player.cpp`
+   does it, which is the reference implementation to follow. Each piece is
+   substantial on its own; this is a multi-session feature, not a tweak.
 
 ## Engine/tooling cleanup
 
