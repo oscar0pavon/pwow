@@ -1,5 +1,5 @@
-#ifndef PWOW_INPUT_H
-#define PWOW_INPUT_H
+#ifndef INPUT_H
+#define INPUT_H
 
 #include <stdbool.h>
 

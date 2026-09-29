@@ -1,5 +1,5 @@
-#ifndef PWOW_CAMERA_H
-#define PWOW_CAMERA_H
+#ifndef CAMERA_H
+#define CAMERA_H
 
 #include <cglm/cglm.h>
 #include <engine/camera.h>

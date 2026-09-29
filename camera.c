@@ -1,4 +1,4 @@
-#include "pwow_camera.h"
+#include "camera.h"
 
 #include <math.h>
 
