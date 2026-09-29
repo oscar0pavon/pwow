@@ -215,9 +215,21 @@ static void player_load() {
 //native Y, not up at all) before the up-axis fix ever touches it. built
 //directly instead, in the order that actually matches how a point is meant
 //to move: turn to face first, stand it upright second, then place it
+//taurenmale.glb's own lowest vertex, in its Stand pose, sits this far below
+//its root bone's local origin (measured by simulating the pose's actual
+//skinning - forward kinematics through inverse bind matrices - rather than
+//trusting the unposed mesh's own bounding box, which a keyframed animation
+//is free to sit well above or below; see tools/m22gltf.c's animation
+//translation fix for why those two used to disagree by over a yard).
+//rotated into pwow's Z-up world by the fix above, a Y-up "lowest" carries
+//straight into a Z-up "lowest", unchanged
+#define PLAYER_FOOT_OFFSET 0.011f
+
 static void player_place(vec3 position, float facing_degrees) {
+  vec3 render_position = {position[0], position[1],
+                          position[2] + PLAYER_FOOT_OFFSET};
   glm_mat4_identity(player_model.model_mat);
-  glm_translate(player_model.model_mat, position);
+  glm_translate(player_model.model_mat, render_position);
   glm_rotate(player_model.model_mat, glm_rad(facing_degrees), (vec3){0, 0, 1});
   glm_rotate(player_model.model_mat, glm_rad(90.0f), (vec3){1, 0, 0});
   glm_vec3_copy(position, player_model.position);
@@ -423,12 +435,51 @@ static float movement_speed() {
   return input.SHIFT.pressed ? base * fast : base;
 }
 
-//moves the character relative to its own facing (forward is whichever way it
-//is turned, not where the camera looks - WoWee's moveFollowedCharacter()
-//does the same split), snaps its feet to the ground, then lets the orbit
-//camera catch up. no wall push or building floors yet, unlike the fly
-//camera's own keep_out_of_walls()/follow_ground() - the character can walk
-//through what the camera cannot
+//the character's own wall push and floor snap - the same
+//pe_terrain_world_push_out()/pe_terrain_world_floor_at() the fly camera's
+//keep_out_of_walls()/follow_ground() already use, just built around
+//player_position directly rather than main_camera.position - the character
+//has no eye-height offset to subtract first, since player_position already
+//is its feet, not its eyes
+static void character_keep_out_of_walls() {
+  const float heights[] = {BODY_SPHERE_LOW, BODY_SPHERE_HIGH};
+  vec3 feet;
+  glm_vec3_copy(player_position, feet);
+
+  for (int pass = 0; pass < WALL_PUSH_PASSES; pass++) {
+    bool moved = false;
+
+    for (int i = 0; i < 2; i++) {
+      vec3 centre = {feet[0], feet[1], feet[2] + heights[i]};
+      vec3 before;
+      glm_vec3_copy(centre, before);
+
+      if (pe_terrain_world_push_out(&world, centre, BODY_RADIUS) == false)
+        continue;
+
+      feet[0] += centre[0] - before[0];
+      feet[1] += centre[1] - before[1];
+      moved = true;
+    }
+    if (moved == false)
+      break;
+  }
+
+  player_position[0] = feet[0];
+  player_position[1] = feet[1];
+}
+
+//no eye-height/step lookahead needed either: the ray already starts a step
+//above the feet, which are what player_position is
+static void character_follow_ground() {
+  character_keep_out_of_walls();
+
+  float floor;
+  if (pe_terrain_world_floor_at(&world, player_position[0], player_position[1],
+                                player_position[2] + STEP_HEIGHT, &floor))
+    player_position[2] = floor;
+}
+
 static void update_live_character(float seconds) {
   PwowFrameInput in;
   pwow_input_read(&in);
@@ -460,10 +511,7 @@ static void update_live_character(float seconds) {
     glm_vec3_muladds(direction, CHARACTER_MOVE_SPEED * seconds, player_position);
   }
 
-  float ground = 0;
-  if (pe_terrain_world_height_at(&world, player_position[0], player_position[1],
-                                 &ground))
-    player_position[2] = ground;
+  character_follow_ground();
 
   player_place(player_position, player_facing);
   pwow_camera_update(&player_camera, &main_camera, player_position, seconds);
