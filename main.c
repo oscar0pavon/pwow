@@ -26,6 +26,7 @@
 #include <string.h>
 
 #include "camera.h"
+#include "creatures.h"
 #include "input.h"
 
 #define PLAYER_MODEL_PATH "data/character/tauren/male/taurenmale.glb"
@@ -448,6 +449,8 @@ static void pwow_draw_scene(PRenderTarget *target, VkCommandBuffer *command,
 
   pe_vk_terrain_world_draw(&world, &frame, *command, image_index);
   player_draw(command, image_index);
+  if (live_mode)
+    creatures_draw(command, image_index, main_camera.view, main_camera.projection);
 
   char hud_line[128];
   snprintf(hud_line, sizeof(hud_line), "%s  (%.0f, %.0f, %.0f)", map,
@@ -485,6 +488,8 @@ static void pwow_init() {
   player_load();
 
   if (live_mode) {
+    creatures_init();
+
     glm_vec3_copy(position, player_position);
     player_facing = live_player_facing_degrees;
     player_place(player_position, player_facing);
@@ -724,6 +729,7 @@ static void update_live_character(float seconds) {
 static void pwow_update() {
   if (live_mode) {
     pe_wowworld_poll(&world_conn, &npc_state);
+    creatures_sync(&npc_state);
     update_live_character(delta_time);
     stream_world();
     play_animation_list(delta_time);

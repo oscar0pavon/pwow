@@ -17,16 +17,57 @@ history, credentials and file:line references behind these items.
    the world connection is now kept open after login instead of closed. HUD
    lists the nearest few tracked creatures (entry, display id, distance) to
    prove it end to end — see "Text / HUD" below for what's next now that
-   there's real entity data to draw. Not yet rendered as models (that's its
-   own large feature: display id → `CreatureDisplayInfo.dbc` → model →
-   `m22gltf`).
-2. Tune live-character feel by hand: `CHARACTER_MOVE_SPEED`,
+   there's real entity data to draw.
+2. **Done**: render "simple" (non-humanoid) creatures as real models -
+   `CreatureDisplayInfo.dbc` rows with `ExtendedDisplayInfoID == 0`, whose
+   look comes from their own model+texture rather than
+   `CreatureDisplayInfoExtra`'s race/gender/skin/face/hair/equipment (the
+   player-character pipeline, which this does not drive - see item 5).
+   `tools/resolve_creatures.c` (new, pengine-linked to reuse `wowdbc.h`) finds
+   every such display id and prints its model + any texture-variation
+   override; `prepare_creatures.sh` (new, run once, no arguments) converts
+   them all via `m22gltf`/`blp_convert` into `data/`, same shape as
+   `prepare_tile.sh`. New `creatures.h`/`.c` resolves a tracked creature's
+   display id the same way at runtime (cached), loads one `PModel` template
+   per unique species and a `pe_vk_model_instance()` copy per tracked
+   creature, and draws them from `pwow_draw_scene()`. Verified live: a
+   Plainstrider (Tallstrider model) renders correctly textured at its real
+   tracked position near Camp Narache.
+   - Found and fixed a real, previously-latent pengine gap along the way:
+     `pe_vk_pipeline_layout` (`renderer/descriptor_set.h`) is declared and
+     destroyed at shutdown but was never actually created anywhere in
+     `vulkan.c`'s init - nothing had ever used it, since `pe_vk_load_model()`'s
+     own plain descriptor sets were always either thrown away and rebuilt
+     skinned (the player) or never paired with a real pipeline before now.
+     Worked around by using `pe_vk_pipeline_layout_with_descriptors` instead
+     (the one `vulkan.c` actually builds against the same
+     `pe_vk_descriptor_set_layout` `pe_vk_load_model()` uses, already proven
+     working by `gui.c`'s button quads) rather than fixing the gap itself.
+   - Also worth remembering: `pe_vk_model_instance()` shares its source's
+     vertex/index buffers by design, but `pe_clean_model()` unconditionally
+     frees them - calling it on an instance would free geometry the template
+     (and any other instance of the same species) still needs. Creature
+     instance teardown (`creatures.c`'s `release_creature_instance()`) only
+     frees the uniform buffers and descriptor pool an instance actually owns,
+     deliberately not `pe_clean_model()`.
+3. Humanoid NPCs (most of what's actually near Camp Narache - the Tauren
+   quest-givers) still render as nothing: their `CreatureDisplayInfo` row
+   points at `CreatureDisplayInfoExtra` (race/gender/skin/face/hair/
+   equipment) and names no texture of its own, confirmed their
+   `CreatureModelData.modelName` is literally `Character\Tauren\Male\
+   TaurenMale.mdx`/`Female\...` - the same models the player uses. Extending
+   the player's character pipeline to also drive NPCs from
+   `CreatureDisplayInfoExtra` would cover them, but needs per-NPC skin/face/
+   hair resolution and likely new race/gender model conversions beyond the
+   one Tauren-male model that exists today - a separate, much bigger feature,
+   deliberately out of scope for item 2.
+4. Tune live-character feel by hand: `CHARACTER_MOVE_SPEED`,
    `CHARACTER_TURN_SPEED_DEGREES`, camera distance (top of `main.c`) — never
    actually played with, only reasoned about.
-3. Character creation (`CMSG_CHAR_CREATE`) isn't ported — the one test
+5. Character creation (`CMSG_CHAR_CREATE`) isn't ported — the one test
    character was made with the real WoWee client. Only needed if pwow should
    be able to create a character itself.
-4. Everything else of WoWee's `game/` module (chat, spells, quests, inventory,
+6. Everything else of WoWee's `game/` module (chat, spells, quests, inventory,
    transports) is out of scope until something above needs it.
 
 ## Text / HUD
