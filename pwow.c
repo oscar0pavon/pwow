@@ -5,8 +5,10 @@
 #include <engine/model.h>
 #include <engine/renderer/descriptor_set.h>
 #include <engine/renderer/draw.h>
+#include <engine/renderer/pipeline.h>
 #include <engine/renderer/shaders.h>
 #include <engine/renderer/uniform_buffer.h>
+#include <engine/renderer/vk_vertex.h>
 #include <engine/renderer/vulkan.h>
 #include <engine/skeletal.h>
 #include <engine/terrain/terrain_world.h>
@@ -143,6 +145,28 @@ static void player_load() {
   shader_info.vertex_path = file_skinned_spv;
   shader_info.fragment_path = file_diffuse_frag_spv;
   shader_info.layout = pe_vk_pipeline_layout_skinned;
+
+  //the engine's own default vertex input (used when this is left NULL) only
+  //describes position and uv - fine for the plain "color"/"diffuse" shaders,
+  //but skinned.vert also declares color, normal, joint and weight inputs at
+  //locations 1, 2, 4 and 5. leaving those undeclared here isn't a silent
+  //no-op: validation reports it outright (VUID-VkGraphicsPipelineCreateInfo-
+  //Input-07904), and without it the pipeline has no idea how to find joint/
+  //weight in the vertex buffer, so every vertex skins against whatever
+  //garbage ends up in those shader inputs instead of the real data
+  PVertexAtrributes skinned_attributes;
+  ZERO(skinned_attributes);
+  skinned_attributes.has_attributes = true;
+  skinned_attributes.position = true;
+  skinned_attributes.color = true;
+  skinned_attributes.normal = true;
+  skinned_attributes.uv = true;
+  skinned_attributes.joint = true;
+  skinned_attributes.weight = true;
+  VkPipelineVertexInputStateCreateInfo skinned_vertex_input =
+      pe_vk_pipeline_get_default_vertex_input(&skinned_attributes);
+  shader_info.vertex_input = &skinned_vertex_input;
+
   pe_vk_create_shader(&shader_info);
 
   pe_vk_load_skin(&player_skin, &player_model, PLAYER_MODEL_PATH);
