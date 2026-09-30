@@ -3,11 +3,13 @@
 
 #include <stdbool.h>
 
-//one frame's movement intent, read from pengine's own key state. the
-//keyboard-only subset of WoWee's CameraController::FrameInput pwow actually
-//needs to move a character - no touch, no UI-focus check, since pwow has
-//none of those. mouse-look is a camera concern, not movement intent, and is
-//read straight off pengine's global `mouse` in main.c instead
+//one frame's movement intent, read from pengine's own key state (and the
+//right mouse button, which gates whether A/D turn or strafe - see
+//pwow_input_read()). the keyboard-only subset of WoWee's
+//CameraController::FrameInput pwow actually needs to move a character - no
+//touch, no UI-focus check, since pwow has none of those. mouse-look itself is
+//a camera concern, not movement intent, and is read straight off pengine's
+//global `mouse` in main.c instead
 typedef struct PwowFrameInput {
   bool forward;
   bool backward;
