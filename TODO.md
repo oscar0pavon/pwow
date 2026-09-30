@@ -258,21 +258,48 @@ in `m22gltf.c`). Remaining gaps, in the order they'll probably bite:
      needs `PLAYER_END` = 1282 fields (41 mask dwords, 164 bytes) - over the
      old cap, so the whole block was silently refused and equipment was
      never seen at all until this was bumped to 256.
-   - **Not done yet: (c), the actual visual result.** This needs engine work
-     first, in `/root/pengine`, not just pwow: `pe_primitive_is_default()`
-     (`pengine/src/engine/model.c`) currently bakes in only the bare/default
-     geoset of each group at *load* time and permanently discards every
-     other variant, so there is no runtime concept of an active geoset set to
-     toggle equipment visibility against (WoWee's `setActiveGeosets`) -
-     loading every geoset variant and adding that toggle is a pengine change.
-     Separately, the six texture-region fields `ItemDisplayInfo.dbc` names
-     (torso/leg/arm upper+lower, hand, foot) are painted onto specific UV
-     rectangles of the base body skin texture (WoWee's
-     `item_textures.hpp`/`compositeTextures` - a runtime texture compositor),
-     not loaded as whole separate textures; pwow has no such compositor yet
-     and no record of the Tauren-male skin atlas's own UV layout to composite
-     against. Weapons (a `LeftModel`/`RightModel` attached at a bone) are out
-     of scope for a first pass either way.
+   - **Done: (c), the actual visual result - verified against the real
+     server.** Needed a pengine change first: `PModel` now keeps every
+     primitive's indices (`all_indices`) plus one `PGeosetBatch` per
+     primitive (its geoset id and where its slice sits), alongside the
+     `index_array` `pe_load_mesh()` still builds from the guessed defaults
+     alone, so nothing already drawing a model changed. Three new calls -
+     `pe_model_default_geosets()` (what the defaults actually were),
+     `pe_model_has_geoset()` (does the model carry a given id at all, for
+     falling back to bare when it doesn't), and
+     `pe_model_set_active_geosets()` (rebuild `index_array` against an
+     arbitrary set and re-upload the GPU index buffer - destroy-and-recreate,
+     matching `terrain_world.c`'s own tile-unload convention of waiting for
+     the gpu to be idle first, since equipment changes are rare enough not
+     to need to be cheaper). `main.c`'s `apply_player_geosets()` ports
+     WoWee's `entity_spawner_player.cpp` geoset-selection rules onto this -
+     `eraseGroup`/`pickGeoset`/`equippedGeoset` and the per-invType group
+     mapping (chest/robe → sleeves group 8 and, for a robe, kilt group 13;
+     legs → group 13; feet → group 5; hands → group 4; wrists → group 8 if
+     chest didn't already set it; waist → belt group 18; cloak → group 15) -
+     minus helm/shoulder model attachment, weapons and belt/tabard art,
+     still out of scope.
+     The six texture-region fields (torso/leg/arm upper+lower, hand, foot)
+     are composited onto the base body skin at fixed pixel rects on its
+     256x256 atlas (WoWee's `compositeWithRegions()`'s own coordinate table -
+     the Tauren male skin already is 256x256, so none of its upscaling
+     applies here) by `main.c`'s `apply_player_texture()`. Getting the art
+     itself is a new problem every other texture in this repo sidesteps: an
+     item's region texture is only named once the live server sends it, so
+     there is no offline `prepare_*.sh` step that could have converted it
+     ahead of time - `resolve_item_region_texture()` converts the game's own
+     `.blp` to a `data/` png at runtime, the first time a given one is
+     needed (`fork`/`execv` of `$BLP_CONVERT`, no shell - the texture name
+     ultimately comes off the wire, by way of `ItemDisplayInfo.dbc`), trying
+     the gendered file first, then unisex, then bare
+     (`item_textures.hpp`'s own resolution order; only ever the male
+     spelling here). Verified against the real vmangos server: an Acolyte's
+     Robe manually equipped on the test character now renders as an actual
+     maroon cloth robe - torso, sleeves and a long skirt down past the
+     knees - matching its real in-game look, not just a geometry change on
+     an unshaded black silhouette.
+     Weapons (a `LeftModel`/`RightModel` attached at a bone), helm/shoulder
+     model attachment, and belt/tabard art are still out of scope.
 
 ## Engine/tooling cleanup
 

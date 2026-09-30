@@ -8,6 +8,7 @@
 #include <engine/renderer/pipeline.h>
 #include <engine/renderer/shaders.h>
 #include <engine/renderer/uniform_buffer.h>
+#include <engine/renderer/vk_images.h>
 #include <engine/renderer/vk_vertex.h>
 #include <engine/renderer/vulkan.h>
 #include <engine/skeletal.h>
@@ -21,9 +22,13 @@
 #include <wowauth/wowworld.h>
 
 #include <ctype.h>
+#include <fcntl.h>
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <sys/wait.h>
+#include <unistd.h>
 
 #include "camera.h"
 #include "creatures.h"
@@ -513,13 +518,260 @@ static void apply_player_geosets() {
   pe_model_set_active_geosets(&player_model, active, active_count);
 }
 
+//---------------------------------------------------------------------------
+//equipment textures: compositing ItemDisplayInfo's six body-region overlays
+//onto the base skin (WoWee's compositeWithRegions() is the reference; see
+//PItemDisplayInfo's own doc comment for why these were only logged before)
+//---------------------------------------------------------------------------
+
+//creates path and every missing parent directory, tolerating "already
+//exists" - the only place pwow creates a directory at runtime; every other
+//data/ path is a prepare_*.sh script's job, done offline before pwow ever
+//runs, but an item's region art is only named once the live server sends
+//it, so there is no offline step that could have converted it ahead of time
+static void make_directories(const char *path) {
+  char buf[512];
+  snprintf(buf, sizeof(buf), "%s", path);
+  for (char *p = buf + 1; *p; p++) {
+    if (*p == '/') {
+      *p = '\0';
+      mkdir(buf, 0755);
+      *p = '/';
+    }
+  }
+  mkdir(buf, 0755);
+}
+
+static bool copy_file(const char *from, const char *to) {
+  FILE *in = fopen(from, "rb");
+  if (!in)
+    return false;
+  FILE *out = fopen(to, "wb");
+  if (!out) {
+    fclose(in);
+    return false;
+  }
+  char buf[65536];
+  size_t n;
+  while ((n = fread(buf, 1, sizeof(buf), in)) > 0)
+    fwrite(buf, 1, n, out);
+  fclose(in);
+  fclose(out);
+  return true;
+}
+
+//runs argv[0] with argv, no shell involved - argv[] is built from a fixed
+//tool path plus a texture name that ultimately comes off the wire
+//(ItemDisplayInfo.dbc, read by entry the local server names), so this
+//never goes through a shell to interpolate it into. blocks for the child;
+//true if it exited 0
+static bool run_tool(char *const argv[]) {
+  pid_t pid = fork();
+  if (pid < 0)
+    return false;
+  if (pid == 0) {
+    int devnull = open("/dev/null", O_WRONLY);
+    if (devnull >= 0) {
+      dup2(devnull, STDOUT_FILENO);
+      dup2(devnull, STDERR_FILENO);
+    }
+    execv(argv[0], argv);
+    _exit(127);
+  }
+  int status;
+  waitpid(pid, &status, 0);
+  return WIFEXITED(status) && WEXITSTATUS(status) == 0;
+}
+
+#define GAME_DATA_PATH_DEFAULT "/root/sources/WoWee/Data/expansions/classic"
+#define BLP_CONVERT_PATH_DEFAULT "/root/sources/WoWee/build/bin/blp_convert"
+
+//one of ItemDisplayInfo's 8 texture-region columns: the folder under
+//Item\TextureComponents (item_textures.hpp), lowercased and without the
+//backslashes - this repo's extracted game data tree is lowercase
+//throughout (WoWee's own MPQ extraction convention), unlike the DBC's own
+//spelling - and where its art lands on the 256x256 base skin atlas
+//(WoWee's compositeWithRegions(), its own 256-base coordinate table; the
+//Tauren male skin already is 256x256, so none of its upscaling applies here)
+typedef struct PItemRegion {
+  const char *folder;
+  int dst_x, dst_y, width, height;
+} PItemRegion;
+
+#define ITEM_REGION_COUNT 8
+static const PItemRegion ITEM_REGIONS[ITEM_REGION_COUNT] = {
+    {"armuppertexture", 0, 0, 128, 64},
+    {"armlowertexture", 0, 64, 128, 64},
+    {"handtexture", 0, 128, 128, 32},
+    {"torsouppertexture", 128, 0, 128, 64},
+    {"torsolowertexture", 128, 64, 128, 32},
+    {"leguppertexture", 128, 96, 128, 64},
+    {"leglowertexture", 128, 160, 128, 64},
+    {"foottexture", 128, 224, 128, 32},
+};
+
+//resolves one ItemDisplayInfo texture name to a data/ png path, converting
+//it from the game's own .blp the first time it's needed - tries the
+//gendered file first, then unisex, then the bare name (item_textures.hpp's
+//own resolution order), and only ever the male one, since taurenmale.glb
+//is the only race/gender pwow has converted. false if tex_name is empty or
+//none of the three spellings exist on disk
+static bool resolve_item_region_texture(const PItemRegion *region,
+                                        const char *tex_name, char *out,
+                                        size_t out_size) {
+  if (tex_name[0] == '\0')
+    return false;
+
+  char lower[128];
+  snprintf(lower, sizeof(lower), "%s", tex_name);
+  for (char *c = lower; *c; c++)
+    *c = (char)tolower((unsigned char)*c);
+
+  const char *game_data = getenv("GAME_DATA");
+  if (!game_data)
+    game_data = GAME_DATA_PATH_DEFAULT;
+  const char *blp_convert = getenv("BLP_CONVERT");
+  if (!blp_convert)
+    blp_convert = BLP_CONVERT_PATH_DEFAULT;
+
+  static const char *suffixes[] = {"_m", "_u", ""};
+  for (int s = 0; s < 3; s++) {
+    char source_blp[512];
+    snprintf(source_blp, sizeof(source_blp),
+            "%s/item/texturecomponents/%s/%s%s.blp", game_data,
+            region->folder, lower, suffixes[s]);
+    if (access(source_blp, F_OK) != 0)
+      continue;
+
+    char dest_dir[480];
+    snprintf(dest_dir, sizeof(dest_dir), "data/item/texturecomponents/%s",
+            region->folder);
+    char dest_base[512];
+    snprintf(dest_base, sizeof(dest_base), "%s/%s%s", dest_dir, lower,
+            suffixes[s]);
+    snprintf(out, out_size, "%s.png", dest_base);
+
+    if (access(out, F_OK) == 0)
+      return true; //converted already, by an earlier equip of the same item
+
+    make_directories(dest_dir);
+    char dest_blp[532];
+    snprintf(dest_blp, sizeof(dest_blp), "%s.blp", dest_base);
+    if (!copy_file(source_blp, dest_blp))
+      return false;
+
+    char *argv[] = {(char *)blp_convert, "--to-png", dest_blp, NULL};
+    bool ok = run_tool(argv);
+    remove(dest_blp);
+    return ok && access(out, F_OK) == 0;
+  }
+  return false;
+}
+
+//copies src's pixels into dst at (dst_x, dst_y), clamped to whichever of
+//src's or the given width/height is smaller - a size mismatch is silently
+//truncated rather than refused, since a wrong-sized region texture should
+//still draw something close rather than nothing (WoWee's own
+//compositeWithRegions() instead rescales; not needed here, since every
+//region texture this has seen so far matches its expected size exactly)
+static void blit_region(PImage *dst, PImage *src, int dst_x, int dst_y,
+                        int width, int height) {
+  int w = width < src->width ? width : src->width;
+  int h = height < src->heigth ? height : src->heigth;
+  if (dst_x + w > dst->width)
+    w = dst->width - dst_x;
+  if (dst_y + h > dst->heigth)
+    h = dst->heigth - dst_y;
+
+  for (int y = 0; y < h; y++) {
+    unsigned char *dst_row =
+        dst->pixels_data + ((size_t)(dst_y + y) * dst->width + dst_x) * 4;
+    unsigned char *src_row = src->pixels_data + (size_t)y * src->width * 4;
+    memcpy(dst_row, src_row, (size_t)w * 4);
+  }
+}
+
+//composites every region texture one resolved equip slot's own
+//ItemDisplayInfo names onto base, converting/loading each on demand
+static void composite_slot_regions(PImage *base,
+                                   const PItemDisplayInfo *display) {
+  struct {
+    const PItemRegion *region;
+    const char *name;
+  } regions[ITEM_REGION_COUNT] = {
+      {&ITEM_REGIONS[0], display->texture_arm_upper},
+      {&ITEM_REGIONS[1], display->texture_arm_lower},
+      {&ITEM_REGIONS[2], display->texture_hand},
+      {&ITEM_REGIONS[3], display->texture_torso_upper},
+      {&ITEM_REGIONS[4], display->texture_torso_lower},
+      {&ITEM_REGIONS[5], display->texture_leg_upper},
+      {&ITEM_REGIONS[6], display->texture_leg_lower},
+      {&ITEM_REGIONS[7], display->texture_foot},
+  };
+
+  for (int i = 0; i < ITEM_REGION_COUNT; i++) {
+    char png_path[512];
+    if (!resolve_item_region_texture(regions[i].region, regions[i].name,
+                                     png_path, sizeof(png_path)))
+      continue;
+
+    PImage region_image;
+    ZERO(region_image);
+    if (pe_load_image(png_path, &region_image) != 0)
+      continue;
+
+    blit_region(base, &region_image, regions[i].region->dst_x,
+               regions[i].region->dst_y, regions[i].region->width,
+               regions[i].region->height);
+    free_image(&region_image);
+  }
+}
+
+#define PLAYER_SKIN_SIZE 256
+
+//rebuilds the player's skin texture from the base body skin plus every
+//resolved equip slot's own region overlays, and swaps it into player_model
+//- destroy-and-recreate plus a descriptor rewrite, the same pattern
+//apply_player_geosets() already uses for the index buffer, and for the
+//same reason: this is a rare, player-driven event, not a per-frame one.
+//only ever composites against the stock 256x256 atlas; a base skin of any
+//other size is left alone, since the region coordinate table above has no
+//meaning for one
+static void apply_player_texture() {
+  char skin_path[512];
+  resolve_player_skin_path(PLAYER_SKIN_ID, skin_path, sizeof(skin_path));
+
+  PImage base;
+  ZERO(base);
+  if (pe_load_image(skin_path, &base) != 0)
+    return;
+  if (base.width != PLAYER_SKIN_SIZE || base.heigth != PLAYER_SKIN_SIZE) {
+    free_image(&base);
+    return;
+  }
+
+  for (int slot = 0; slot < PE_WOWOBJECT_PLAYER_EQUIP_SLOTS; slot++)
+    if (player_equip_slots[slot].have_display)
+      composite_slot_regions(&base, &player_equip_slots[slot].display);
+
+  PTexture new_texture;
+  ZERO(new_texture);
+  pe_vk_create_texture_from_image(&new_texture, &base);
+  new_texture.gpu_loaded = true;
+  free_image(&base);
+
+  vkDeviceWaitIdle(vk_device);
+  pe_vk_clean_image(&player_model.texture);
+  player_model.texture = new_texture;
+  pe_vk_descriptor_skinned_update(&player_model, &player_skin,
+                                  &main_render_target);
+}
+
 //call every live-mode frame, after pe_wowworld_poll(): for any equip slot
 //whose PLAYER_VISIBLE_ITEM entry has changed since last seen, resolves it
 //to a display id (CMSG_ITEM_QUERY_SINGLE), looks that up in
-//ItemDisplayInfo.dbc, and re-applies the player's active geosets if
-//anything actually changed. the six body-region textures ItemDisplayInfo
-//also names are still only logged, not composited onto the player's skin -
-//see PItemDisplayInfo's own doc comment
+//ItemDisplayInfo.dbc, and re-applies the player's active geosets and skin
+//texture if anything actually changed
 static void sync_player_equipment() {
   if (!npc_state.player_equipment.valid)
     return;
@@ -567,8 +819,10 @@ static void sync_player_equipment() {
        equip->display.texture_hand, equip->display.texture_foot);
   }
 
-  if (changed)
+  if (changed) {
     apply_player_geosets();
+    apply_player_texture();
+  }
 }
 
 static const char *map = DEFAULT_MAP;
