@@ -154,10 +154,15 @@ static ResolvedDisplay *resolve_display(u32 display_id) {
 //instance of it via pe_vk_model_instance_skinned()
 //---------------------------------------------------------------------------
 
-//the idle clip every instance of a species plays, looped, chosen once for
-//the whole species rather than per creature - see the comment on skin in
-//CreatureTemplate below for why
+//the three clips an instance switches between: standing still, and moving
+//per PWowCreature.moving/walking (wowobject.h - walking is the real
+//PRE_WOTLK_RUNMODE bit off the last SMSG_MONSTER_MOVE's spline flags, not a
+//guess). resolved once per species in find_or_load_template(), not per
+//creature, same as the game's own animation ids (4 Walk, 5 Run) are shared
+//by every creature of a kind
 #define CREATURE_IDLE_ANIMATION "Stand"
+#define CREATURE_WALK_ANIMATION "Walk"
+#define CREATURE_RUN_ANIMATION "Run"
 
 typedef struct CreatureTemplate {
   char glb_path[256];
@@ -165,10 +170,12 @@ typedef struct CreatureTemplate {
   //the species' own mesh, joint topology and animation clips - read-only
   //once loaded. never drawn or played directly and never shared with an
   //instance's own skin; pe_vk_skin_instance() copies out of this per
-  //instance (see CreatureInstance below), and idle_animation names the clip
-  //each new instance should start on
+  //instance (see CreatureInstance below), and idle/walk/run_animation name
+  //the clips each instance switches between
   PSkin skin;
   char idle_animation[48];
+  char walk_animation[48];
+  char run_animation[48];
   float foot_offset;
 } CreatureTemplate;
 
@@ -197,6 +204,15 @@ static float compute_foot_offset(PModel *model) {
       min_y = vertex->position[1];
   }
   return model->vertex_array.count > 0 ? -min_y : 0.0f;
+}
+
+static bool has_animation(PSkin *skin, const char *name) {
+  for (int i = 0; i < skin->animations.count; i++) {
+    PAnimation *animation = array_get(&skin->animations, i);
+    if (strcmp(animation->name, name) == 0)
+      return true;
+  }
+  return false;
 }
 
 static CreatureTemplate *find_or_load_template(const ResolvedDisplay *resolved) {
@@ -255,23 +271,32 @@ static CreatureTemplate *find_or_load_template(const ResolvedDisplay *resolved) 
   //static when that happens, rather than hardcoding every species' own
   //idle clip name. recorded here, not played: this is the template, never
   //drawn or posed itself - each instance plays it on its own copy, in
-  //find_or_load_template()'s caller
+  //creatures_sync()
   const char *idle_animation = CREATURE_IDLE_ANIMATION;
-  if (t->skin.animations.count > 0) {
-    bool has_idle_clip = false;
-    for (int i = 0; i < t->skin.animations.count; i++) {
-      PAnimation *animation = array_get(&t->skin.animations, i);
-      if (strcmp(animation->name, idle_animation) == 0) {
-        has_idle_clip = true;
-        break;
-      }
-    }
-    if (!has_idle_clip) {
-      PAnimation *first = array_get(&t->skin.animations, 0);
-      idle_animation = first->name;
-    }
+  if (t->skin.animations.count > 0 && !has_animation(&t->skin, idle_animation)) {
+    PAnimation *first = array_get(&t->skin.animations, 0);
+    idle_animation = first->name;
   }
   snprintf(t->idle_animation, sizeof(t->idle_animation), "%s", idle_animation);
+
+  //same fallback idea for each locomotion clip: prefer the one the wire
+  //actually asked for, fall back to the other gait if that's all the
+  //species has, and fall back to idle_animation itself if it has neither -
+  //still moving on screen, just not visibly walking or running, rather than
+  //a T-pose or a stale clip
+  const char *walk_animation = t->idle_animation;
+  if (has_animation(&t->skin, CREATURE_WALK_ANIMATION))
+    walk_animation = CREATURE_WALK_ANIMATION;
+  else if (has_animation(&t->skin, CREATURE_RUN_ANIMATION))
+    walk_animation = CREATURE_RUN_ANIMATION;
+  snprintf(t->walk_animation, sizeof(t->walk_animation), "%s", walk_animation);
+
+  const char *run_animation = t->idle_animation;
+  if (has_animation(&t->skin, CREATURE_RUN_ANIMATION))
+    run_animation = CREATURE_RUN_ANIMATION;
+  else if (has_animation(&t->skin, CREATURE_WALK_ANIMATION))
+    run_animation = CREATURE_WALK_ANIMATION;
+  snprintf(t->run_animation, sizeof(t->run_animation), "%s", run_animation);
 
   return t;
 }
@@ -363,6 +388,14 @@ void creatures_sync(const PWowObjectState *npc_state) {
     if (!resolved || !resolved->simple)
       continue;
 
+    //cheap once a species is loaded - a strcmp scan over at most
+    //CREATURE_TEMPLATES_MAX entries - and every tracked creature needs its
+    //template every frame now, to know which clip name "moving" means for
+    //its own species, not just the first time it is seen
+    CreatureTemplate *template = find_or_load_template(resolved);
+    if (!template)
+      continue;
+
     int slot = -1;
     for (int s = 0; s < CREATURE_INSTANCES_MAX; s++) {
       if (creature_instances[s].used && creature_instances[s].guid == creature->guid) {
@@ -381,10 +414,6 @@ void creatures_sync(const PWowObjectState *npc_state) {
       if (slot < 0)
         continue; //pool full - this creature waits for a slot to free up
 
-      CreatureTemplate *template = find_or_load_template(resolved);
-      if (!template)
-        continue;
-
       CreatureInstance *inst = &creature_instances[slot];
       pe_vk_skin_instance(&inst->skin, &template->skin);
       pe_vk_skin_create_storage_buffers(&inst->skin);
@@ -397,8 +426,6 @@ void creatures_sync(const PWowObjectState *npc_state) {
       //starts zeroed regardless of what the template's looked like
       if (inst->skin.joints.count > 0)
         pe_anim_nodes_update(&inst->skin);
-      if (inst->skin.animations.count > 0)
-        play_animation_by_name(&inst->skin, template->idle_animation, true);
 
       inst->guid = creature->guid;
       inst->foot_offset = template->foot_offset;
@@ -406,6 +433,20 @@ void creatures_sync(const PWowObjectState *npc_state) {
     }
 
     touched[slot] = true;
+
+    //switched every frame, not just on change - play_animation_by_name()
+    //already no-ops when this skin is already playing the clip it's asked
+    //for (animation.c), so re-asking for the same state every frame does
+    //not restart the clip from frame 0. creature->walking is the real
+    //PRE_WOTLK_RUNMODE bit off the wire (wowobject.h), not a guess
+    CreatureInstance *inst = &creature_instances[slot];
+    if (inst->skin.animations.count > 0) {
+      const char *target = template->idle_animation;
+      if (creature->moving)
+        target = creature->walking ? template->walk_animation
+                                   : template->run_animation;
+      play_animation_by_name(&inst->skin, target, true);
+    }
 
     //translate, turn to face (o is already radians off the wire, unlike
     //pwow's own live-character facing which is tracked in degrees), then
