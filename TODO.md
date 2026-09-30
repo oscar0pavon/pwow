@@ -134,11 +134,19 @@ in `m22gltf.c`). Remaining gaps, in the order they'll probably bite:
    duration" from pengine's animation API — would be needed for one-shot
    animations (jump, emote) to know when they've finished, or to sync
    footsteps to a Walk/Run cycle.
-8. Movement→animation selection in `update_live_character()` (`main.c`) is
-   just three states (Stand/Run/Walkbackwards) picked from raw input flags.
-   No strafe-specific animation (WoW has `ShuffleLeft`/`ShuffleRight`), no
-   speed-based Walk vs. Run distinction (player currently always moves at
-   run speed).
+8. **Done**: pure strafing (A/D with no W/S held) now plays `ShuffleLeft`/
+   `ShuffleRight` instead of `Run` - taurenmale.glb carries both clips, they
+   just weren't picked. Forward/backward still wins the animation over a
+   strafe, matching WoWee's `LocomotionFSM`'s `anyStrafeLeft`/
+   `anyStrafeRight` (`locomotion_fsm.cpp`, which require `!movingBackward`).
+   Backpedaling also moves at a new `CHARACTER_BACK_SPEED` (4.5 yd/s,
+   WoWee's `WOW_BACK_SPEED` in `camera_controller.hpp`) instead of the run
+   speed the `Walkbackwards` clip was never paced for - the feet used to
+   slide against the ground. Still no speed-based Walk vs. Run distinction
+   for forward movement: WoWee's own Ctrl-to-walk toggle (`WOW_WALK_SPEED`,
+   2.5 yd/s) has no equivalent key in pengine's `Input` struct (`input.h`
+   only has `SHIFT`, no `CTRL`), so adding it means an engine-side change
+   first.
 
 ## Character rendering polish
 
