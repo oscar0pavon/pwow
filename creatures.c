@@ -261,14 +261,14 @@ static CreatureTemplate *find_or_load_template(const ResolvedDisplay *resolved) 
   if (t->skin.animations.count > 0) {
     bool has_idle_clip = false;
     for (int i = 0; i < t->skin.animations.count; i++) {
-      Animation *animation = array_get(&t->skin.animations, i);
+      PAnimation *animation = array_get(&t->skin.animations, i);
       if (strcmp(animation->name, idle_animation) == 0) {
         has_idle_clip = true;
         break;
       }
     }
     if (!has_idle_clip) {
-      Animation *first = array_get(&t->skin.animations, 0);
+      PAnimation *first = array_get(&t->skin.animations, 0);
       idle_animation = first->name;
     }
     play_animation_by_name(&t->skin, idle_animation, true);
