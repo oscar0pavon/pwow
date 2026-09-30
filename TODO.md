@@ -3,6 +3,13 @@
 Future work for `pwow`/`pengine`, grouped by area. Anything here is unstarted
 unless marked otherwise.
 
+**wowauth moved to pwow.** The vmangos login/realm/world-protocol code
+(`wowauth.c/.h`, `wowworld.c/.h`, `wowobject.c/.h`, `wowdbc.c/.h`,
+`wow_wire.h`) used to live under `pengine/src/engine/wowauth/`; it is now
+`pwow/wowauth/`, since it is WoW-1.12-specific and pengine (a general Vulkan
+engine) had no other use for it and could not reuse it for another game.
+References below to `wowauth/...` mean this repo's copy, not pengine's.
+
 ## Live client (the main direction)
 
 Goal: `pwow` becomes a real client of the local vmangos server, rendering
@@ -11,8 +18,9 @@ actual NPCs instead of only static terrain. See memory
 history, credentials and file:line references behind these items.
 
 1. **Done**: parse `SMSG_UPDATE_OBJECT`/`SMSG_COMPRESSED_UPDATE_OBJECT` for
-   creature spawn position + display id. New pengine module
-   `wowauth/wowobject.h`/`.c`, dispatched by a new `pe_wowworld_poll()`
+   creature spawn position + display id. New module `wowauth/wowobject.h`/`.c`
+   (now pwow's own — see "wowauth moved to pwow" below), dispatched by a new
+   `pe_wowworld_poll()`
    (`wowworld.h`/`.c`) that `pwow_update()` calls once a frame in live mode;
    the world connection is now kept open after login instead of closed. HUD
    lists the nearest few tracked creatures (entry, display id, distance) to
@@ -23,7 +31,7 @@ history, credentials and file:line references behind these items.
    look comes from their own model+texture rather than
    `CreatureDisplayInfoExtra`'s race/gender/skin/face/hair/equipment (the
    player-character pipeline, which this does not drive - see item 5).
-   `tools/resolve_creatures.c` (new, pengine-linked to reuse `wowdbc.h`) finds
+   `tools/resolve_creatures.c` (new, linked against `wowauth/` to reuse `wowdbc.h`) finds
    every such display id and prints its model + any texture-variation
    override; `prepare_creatures.sh` (new, run once, no arguments) converts
    them all via `m22gltf`/`blp_convert` into `data/`, same shape as
@@ -182,7 +190,7 @@ in `m22gltf.c`). Remaining gaps, in the order they'll probably bite:
    races/genders would each need their own `m22gltf` conversion, and their own
    `prepare_character.sh`-style skin-texture conversion.
 3. **`CharSections.dbc` body-skin resolution is done; face, hair and the other
-   races/sexes are not.** `pengine`'s `wowauth/wowdbc.c` is a minimal WDBC
+   races/sexes are not.** `wowauth/wowdbc.c` is a minimal WDBC
    reader (record/field access only, no CSV/JSON fallback - pwow only ever
    reads real DBCs); `main.c`'s `resolve_player_skin_path()` scans
    `data/dbc/CharSections.dbc` (copied by `prepare_character.sh`, which also
