@@ -20,6 +20,10 @@ if [ ! -f "$out/dbc/CharSections.dbc" ]; then
   cp "$DBC_SOURCE/CharSections.dbc" "$out/dbc/CharSections.dbc"
 fi
 
+if [ ! -f "$out/dbc/ItemDisplayInfo.dbc" ]; then
+  cp "$DBC_SOURCE/ItemDisplayInfo.dbc" "$out/dbc/ItemDisplayInfo.dbc"
+fi
+
 for id in $(seq 0 18); do
   png=$(printf "character/tauren/male/taurenmaleskin00_%02d.png" "$id")
   blp="${png%.png}.blp"

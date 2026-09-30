@@ -30,6 +30,15 @@
 #define FIELD_OBJECT_ENTRY 3
 #define FIELD_UNIT_DISPLAYID 131
 
+//PLAYER_VISIBLE_ITEM_1_0 = UNIT_END + 0x48 (UpdateFields_1_12_1.h; UNIT_END
+//188 matches this file's own VALUES_MASK_BYTES_MAX comment below). each
+//slot's own block is 12 dwords wide (_CREATOR 2, _0 8, _PROPERTIES 1, _PAD
+//1) and only dword 0 of _0 - the item entry - is read here; the rest
+//(enchantments, that dword's own upper 7 words) is not needed to draw
+//equipment, only to know what enchant glow to add on top of it
+#define FIELD_PLAYER_VISIBLE_ITEM_1_0 260
+#define PLAYER_VISIBLE_ITEM_STRIDE 12
+
 //a byte cursor over one already fully-received buffer - not WBuf
 //(wow_wire.h), whose 8192-byte storage is sized for one wire packet and too
 //small for a decompressed object-update burst (see OBJECT_SCRATCH_MAX
@@ -197,13 +206,22 @@ static bool parse_movement_block(Cursor *c, bool *has_position, float *x,
   return true;
 }
 
-//generously above any real 1.12 object's field count (a creature's UNIT_END
-//is 188 fields, 6 mask blocks) - if a blockCount off the wire ever exceeds
-//this, something is already wrong and the block is refused rather than
-//read into an undersized array
-#define VALUES_MASK_BYTES_MAX 128
+//generously above any real 1.12 object's field count. a creature's UNIT_END
+//is 188 fields (6 mask dwords), but PLAYER_END (UpdateFields_1_12_1.h) is
+//1282 - the local player's own full CREATE_OBJECT snapshot, the one
+//PLAYER_VISIBLE_ITEM_1_0..19_0 arrives in, needs 41 mask dwords (164
+//bytes). this used to be 128 (creature-sized only), which silently
+//rejected every such block outright - not a crash, just parse_values_block
+//returning false and the rest of the packet going unread, so the local
+//player's equipment was never seen at all
+#define VALUES_MASK_BYTES_MAX 256
 
-static bool parse_values_block(Cursor *c, u32 *entry, u32 *display_id) {
+//equip is NULL unless this block's guid is the local player's own
+//(pe_wowobject_handle_packet decides that before calling in) - every other
+//player/unit/item/gameobject block is still fully walked, to keep the
+//cursor in sync, just without anywhere to put a visible-item field
+static bool parse_values_block(Cursor *c, u32 *entry, u32 *display_id,
+                               PWowPlayerEquipment *equip) {
   u8 block_count = cur_u8(c);
   int mask_bytes = block_count * 4;
   if (mask_bytes > VALUES_MASK_BYTES_MAX)
@@ -223,6 +241,15 @@ static bool parse_values_block(Cursor *c, u32 *entry, u32 *display_id) {
         *entry = value;
       else if (field == FIELD_UNIT_DISPLAYID)
         *display_id = value;
+      else if (equip && field >= FIELD_PLAYER_VISIBLE_ITEM_1_0) {
+        int rel = field - FIELD_PLAYER_VISIBLE_ITEM_1_0;
+        int slot = rel / PLAYER_VISIBLE_ITEM_STRIDE;
+        if (rel % PLAYER_VISIBLE_ITEM_STRIDE == 0 &&
+            slot < PE_WOWOBJECT_PLAYER_EQUIP_SLOTS) {
+          equip->item_entry[slot] = value;
+          equip->valid = true;
+        }
+      }
     }
   }
   return true;
@@ -305,10 +332,14 @@ void pe_wowobject_handle_packet(PWowObjectState *state, const u8 *payload,
       return;
 
     u64 guid = cur_packed_guid(&c);
+    PWowPlayerEquipment *equip =
+        (state->local_player_guid && guid == state->local_player_guid)
+            ? &state->player_equipment
+            : NULL;
 
     if (update_type == UPDATETYPE_VALUES) {
       u32 entry = 0, display_id = 0;
-      if (!parse_values_block(&c, &entry, &display_id))
+      if (!parse_values_block(&c, &entry, &display_id, equip))
         return;
       PWowCreature *existing = find_creature(state, guid);
       if (existing) {
@@ -349,7 +380,8 @@ void pe_wowobject_handle_packet(PWowObjectState *state, const u8 *payload,
     float x = 0, y = 0, z = 0, o = 0;
     bool movement_ok = parse_movement_block(&c, &has_position, &x, &y, &z, &o);
     u32 entry = 0, display_id = 0;
-    bool values_ok = movement_ok && parse_values_block(&c, &entry, &display_id);
+    bool values_ok =
+        movement_ok && parse_values_block(&c, &entry, &display_id, equip);
 
     if (movement_ok && values_ok && object_type == TYPEID_UNIT) {
       PWowCreature *creature = find_or_add_creature(state, guid);
@@ -532,4 +564,8 @@ void pe_wowobject_state_tick(PWowObjectState *state, double delta_seconds) {
         creature->o = creature->move_final_facing;
     }
   }
+}
+
+void pe_wowobject_set_local_player_guid(PWowObjectState *state, u64 guid) {
+  state->local_player_guid = guid;
 }

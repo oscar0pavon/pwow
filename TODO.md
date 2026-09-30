@@ -218,15 +218,61 @@ in `m22gltf.c`). Remaining gaps, in the order they'll probably bite:
    now omits for having no bare variant (see item 3's commit history there)
    before assuming it is simply missing from the conversion.
    Equipment itself is the real gap and a much bigger feature: it needs (a)
-   knowing what is in each equipped slot, which live networking does not
-   parse yet (same networking gap as live-client item 1) or a vmangos
-   `character_inventory`/`item_instance` DB read as a static fallback; (b) an
-   `ItemDisplayInfo.dbc` reader (`wowauth/wowdbc.c` generalizes to this, it is
-   not CharSections-specific) to turn an item id into its model/texture and
-   which geoset group it drives; (c) per-slot geoset selection and texture
-   compositing onto the model the way WoWee's `entity_spawner_player.cpp`
-   does it, which is the reference implementation to follow. Each piece is
-   substantial on its own; this is a multi-session feature, not a tweak.
+   knowing what is in each equipped slot; (b) an `ItemDisplayInfo.dbc` reader
+   to turn an item id into its model/texture and which geoset group it
+   drives; (c) per-slot geoset selection and texture compositing onto the
+   model the way WoWee's `entity_spawner_player.cpp` does it, which is the
+   reference implementation to follow.
+   - **Done: (a) and (b), the data side, live and proven end to end** against
+     the real vmangos server. `wowauth/wowobject.c` now decodes
+     `PLAYER_VISIBLE_ITEM_1_0..19_0` (`UpdateFields_1_12_1.h`: `UNIT_END +
+     0x48`, 12-dword stride, 19 slots) out of the local player's own
+     CREATE_OBJECT/VALUES blocks into a new `PWowPlayerEquipment` on
+     `PWowObjectState`, gated on a new `pe_wowobject_set_local_player_guid()`
+     so it can tell "the local player's own object" apart from anyone else's.
+     `wowworld.c` gained `pe_wowworld_query_item()` (`CMSG_ITEM_QUERY_SINGLE`/
+     `SMSG_ITEM_QUERY_SINGLE_RESPONSE`) to resolve an item entry to its
+     `ItemDisplayInfo` id and inventory type - there is no local item-template
+     data this could come from instead (unlike creature display ids, vanilla
+     ships no client-side `Item.dbc` with a displayid field in this data set).
+     `main.c`'s `sync_player_equipment()` wires both together every live
+     frame and resolves the result through `ItemDisplayInfo.dbc`
+     (`resolve_item_display_info()`, `prepare_character.sh` now copies it
+     too), logging geoset groups and the six body-region texture names for
+     each equipped slot. Verified against the real server: an Acolyte's Robe
+     manually equipped on the test character resolved correctly end to end
+     (entry 57 -> displayInfo 12645, invType 20 -> `Robe_A_01Maroon_*`
+     torso/leg/arm textures, geosetGroup1/3 both 1), matching the DB's own
+     `item_template`/`ItemDisplayInfo.dbc` rows exactly.
+     Two real bugs surfaced and got fixed along the way, both worth
+     remembering: `pe_wowworld_player_login()` used to silently discard
+     every packet while waiting for `SMSG_LOGIN_VERIFY_WORLD`, including (per
+     its own old comment) "the player's own object update" - exactly the one
+     block `PLAYER_VISIBLE_ITEM` fields arrive in, since the server sends it
+     before world-enter confirms. It now takes a `PWowObjectState *` and
+     folds object-update/monster-move packets into it while waiting, the
+     same as `pe_wowworld_poll()` does (`pe_wowworld_query_item()` does the
+     same for its own wait). And `wowobject.c`'s `parse_values_block()` mask
+     buffer (`VALUES_MASK_BYTES_MAX`) was sized for a creature's ~188-field
+     `UNIT_END` (128 bytes, 6 mask dwords) but the player's own full snapshot
+     needs `PLAYER_END` = 1282 fields (41 mask dwords, 164 bytes) - over the
+     old cap, so the whole block was silently refused and equipment was
+     never seen at all until this was bumped to 256.
+   - **Not done yet: (c), the actual visual result.** This needs engine work
+     first, in `/root/pengine`, not just pwow: `pe_primitive_is_default()`
+     (`pengine/src/engine/model.c`) currently bakes in only the bare/default
+     geoset of each group at *load* time and permanently discards every
+     other variant, so there is no runtime concept of an active geoset set to
+     toggle equipment visibility against (WoWee's `setActiveGeosets`) -
+     loading every geoset variant and adding that toggle is a pengine change.
+     Separately, the six texture-region fields `ItemDisplayInfo.dbc` names
+     (torso/leg/arm upper+lower, hand, foot) are painted onto specific UV
+     rectangles of the base body skin texture (WoWee's
+     `item_textures.hpp`/`compositeTextures` - a runtime texture compositor),
+     not loaded as whole separate textures; pwow has no such compositor yet
+     and no record of the Tauren-male skin atlas's own UV layout to composite
+     against. Weapons (a `LeftModel`/`RightModel` attached at a bone) are out
+     of scope for a first pass either way.
 
 ## Engine/tooling cleanup
 

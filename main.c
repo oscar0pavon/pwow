@@ -197,6 +197,380 @@ static PModel player_model;
 static PSkin player_skin;
 static PShader player_shader;
 
+//ItemDisplayInfo.dbc's field layout, classic (confirmed against WoWee's own
+//dbc_layouts.json for this expansion). the model/texture fields for a
+//weapon (LeftModel/RightModel and their textures, fields 1-4) aren't read
+//here yet - drawing a weapon needs attaching a second model at a bone, not
+//just a texture, and is out of scope for the first pass at equipment
+//(TODO.md's "Character rendering polish" item 4)
+#define ITEMDISPLAYINFO_DBC_PATH "data/dbc/ItemDisplayInfo.dbc"
+#define ITEMDISPLAYINFO_FIELD_ID 0
+#define ITEMDISPLAYINFO_FIELD_GEOSET_GROUP1 6
+#define ITEMDISPLAYINFO_FIELD_GEOSET_GROUP3 8
+#define ITEMDISPLAYINFO_FIELD_TEXTURE_ARM_UPPER 14
+#define ITEMDISPLAYINFO_FIELD_TEXTURE_ARM_LOWER 15
+#define ITEMDISPLAYINFO_FIELD_TEXTURE_HAND 16
+#define ITEMDISPLAYINFO_FIELD_TEXTURE_TORSO_UPPER 17
+#define ITEMDISPLAYINFO_FIELD_TEXTURE_TORSO_LOWER 18
+#define ITEMDISPLAYINFO_FIELD_TEXTURE_LEG_UPPER 19
+#define ITEMDISPLAYINFO_FIELD_TEXTURE_LEG_LOWER 20
+#define ITEMDISPLAYINFO_FIELD_TEXTURE_FOOT 21
+
+//the region textures ItemDisplayInfo names are painted onto specific UV
+//rectangles of the base body skin (WoWee's item_textures.hpp compositing),
+//not loaded as a whole separate texture the way the body skin or hair is -
+//resolved and kept per slot (below) so geoset selection can read
+//geoset_group1/3 without re-querying the DBC, but nothing is composited
+//onto the player's texture yet - only the geosets, via apply_player_
+//geosets(), draw anything different
+typedef struct PItemDisplayInfo {
+  u32 geoset_group1, geoset_group3;
+  char texture_torso_upper[64], texture_torso_lower[64];
+  char texture_leg_upper[64], texture_leg_lower[64];
+  char texture_arm_upper[64], texture_arm_lower[64];
+  char texture_hand[64], texture_foot[64];
+} PItemDisplayInfo;
+
+static void copy_dbc_texture_field(const PWowDBC *dbc, u32 record, u32 field,
+                                   char *out, size_t out_size) {
+  snprintf(out, out_size, "%s", pe_wowdbc_get_string(dbc, record, field));
+}
+
+//scans ItemDisplayInfo.dbc for display_info_id's row. false if the DBC is
+//missing or names no such row - 0 is a real display id here (a slot with
+//nothing equipped never gets this far, see sync_player_equipment())
+static bool resolve_item_display_info(u32 display_info_id,
+                                      PItemDisplayInfo *out) {
+  memset(out, 0, sizeof(*out));
+
+  PWowDBC dbc;
+  if (!pe_wowdbc_load(ITEMDISPLAYINFO_DBC_PATH, &dbc))
+    return false;
+
+  bool found = false;
+  for (u32 r = 0; r < dbc.record_count; r++) {
+    if (pe_wowdbc_get_u32(&dbc, r, ITEMDISPLAYINFO_FIELD_ID) != display_info_id)
+      continue;
+
+    out->geoset_group1 =
+        pe_wowdbc_get_u32(&dbc, r, ITEMDISPLAYINFO_FIELD_GEOSET_GROUP1);
+    out->geoset_group3 =
+        pe_wowdbc_get_u32(&dbc, r, ITEMDISPLAYINFO_FIELD_GEOSET_GROUP3);
+    copy_dbc_texture_field(&dbc, r, ITEMDISPLAYINFO_FIELD_TEXTURE_TORSO_UPPER,
+                           out->texture_torso_upper,
+                           sizeof(out->texture_torso_upper));
+    copy_dbc_texture_field(&dbc, r, ITEMDISPLAYINFO_FIELD_TEXTURE_TORSO_LOWER,
+                           out->texture_torso_lower,
+                           sizeof(out->texture_torso_lower));
+    copy_dbc_texture_field(&dbc, r, ITEMDISPLAYINFO_FIELD_TEXTURE_LEG_UPPER,
+                           out->texture_leg_upper,
+                           sizeof(out->texture_leg_upper));
+    copy_dbc_texture_field(&dbc, r, ITEMDISPLAYINFO_FIELD_TEXTURE_LEG_LOWER,
+                           out->texture_leg_lower,
+                           sizeof(out->texture_leg_lower));
+    copy_dbc_texture_field(&dbc, r, ITEMDISPLAYINFO_FIELD_TEXTURE_ARM_UPPER,
+                           out->texture_arm_upper,
+                           sizeof(out->texture_arm_upper));
+    copy_dbc_texture_field(&dbc, r, ITEMDISPLAYINFO_FIELD_TEXTURE_ARM_LOWER,
+                           out->texture_arm_lower,
+                           sizeof(out->texture_arm_lower));
+    copy_dbc_texture_field(&dbc, r, ITEMDISPLAYINFO_FIELD_TEXTURE_HAND,
+                           out->texture_hand, sizeof(out->texture_hand));
+    copy_dbc_texture_field(&dbc, r, ITEMDISPLAYINFO_FIELD_TEXTURE_FOOT,
+                           out->texture_foot, sizeof(out->texture_foot));
+    found = true;
+    break;
+  }
+
+  pe_wowdbc_free(&dbc);
+  return found;
+}
+
+//one PLAYER_VISIBLE_ITEM slot's own resolution state, driven by
+//sync_player_equipment(). resolved_entry tracks what item_entry was last
+//looked up for this slot so a CMSG_ITEM_QUERY_SINGLE round trip only
+//happens once per distinct item, not once a frame forever
+typedef struct PlayerEquipSlot {
+  u32 resolved_entry;
+  bool have_info;
+  PWowItemInfo info;
+  bool have_display;
+  PItemDisplayInfo display;
+} PlayerEquipSlot;
+
+static PlayerEquipSlot player_equip_slots[PE_WOWOBJECT_PLAYER_EQUIP_SLOTS];
+
+#define COUNT_OF(array) (sizeof(array) / sizeof((array)[0]))
+
+//classic InventoryType (vmangos ItemPrototype.h) - which of the 19 equip
+//slots a resolved item's own PWowItemInfo.inventory_type names, independent
+//of which PLAYER_VISIBLE_ITEM index it happened to be read from
+#define INVTYPE_HEAD 1
+#define INVTYPE_BODY 4 //shirt
+#define INVTYPE_CHEST 5
+#define INVTYPE_WAIST 6
+#define INVTYPE_LEGS 7
+#define INVTYPE_FEET 8
+#define INVTYPE_WRISTS 9
+#define INVTYPE_HANDS 10
+#define INVTYPE_CLOAK 16
+#define INVTYPE_TABARD 19
+#define INVTYPE_ROBE 20
+
+//geoset_rules.hpp's own bare/base ids (WoWee) - a group's variant 1 (or the
+//named base one) means "none of this", the same convention taurenmale.glb's
+//own export carries
+#define GEOSET_BARE_FOREARMS 401  //group 4: no gloves
+#define GEOSET_BARE_SHINS 501     //group 5: no boots
+#define GEOSET_BARE_SLEEVES 801   //group 8: no chest/wrist sleeves
+#define GEOSET_BARE_PANTS 1301    //group 13: no leggings, and a robe's kilt
+                                 //replaces this same group
+#define GEOSET_NO_CAPE 1501       //group 15
+#define GEOSET_WITH_CAPE 1502
+#define GEOSET_DEFAULT_TABARD 1201 //group 12
+#define GEOSET_BELT_BASE 1801      //group 18
+
+//ItemDisplayInfo's GeosetGroup columns hold a small number G meaning "the
+//Gth variant after the bare one" (geoset_rules.hpp's equippedGeoset) - so a
+//chest with G=2 wants group 8 variant 3, the bare-sleeves id plus 2. G of
+//zero means the item does not touch that group
+static u32 equipped_geoset(u32 bare_id, u32 group_value) {
+  return bare_id + group_value;
+}
+
+//WoWee's pickGeoset: prefer the equipped variant if taurenmale.glb actually
+//carries it, else fall back (usually the bare id), else 0 - draw nothing
+//for this group. asking pe_model_set_active_geosets() for a variant the
+//model does not have would silently empty that group instead of falling
+//back, since it takes the given set exactly as given
+static u32 pick_geoset(u32 preferred, u32 fallback) {
+  if (preferred != 0 && pe_model_has_geoset(&player_model, preferred))
+    return preferred;
+  if (fallback != 0 && pe_model_has_geoset(&player_model, fallback))
+    return fallback;
+  return 0;
+}
+
+//the first equip slot (of the 19) whose resolved item has one of the given
+//inventory types, or -1. mirrors WoWee's findDisplayIdByInvType, but
+//returns the slot rather than a display id since this also wants that
+//slot's own geoset_group1/3
+static int find_slot_by_inv_type(const u32 *wanted, int wanted_count) {
+  for (int slot = 0; slot < PE_WOWOBJECT_PLAYER_EQUIP_SLOTS; slot++) {
+    PlayerEquipSlot *equip = &player_equip_slots[slot];
+    if (equip->resolved_entry == 0 || !equip->have_info)
+      continue;
+    for (int w = 0; w < wanted_count; w++)
+      if (equip->info.inventory_type == wanted[w])
+        return slot;
+  }
+  return -1;
+}
+
+//the model's own default geoset per group this might override, wiped and
+//replaced with whatever's actually equipped - WoWee's entity_spawner_
+//player.cpp is the reference this ports (helm/shoulder model attachment,
+//weapons and belt/tabard art are all out of scope here, same as TODO.md
+//says; only the geoset selection itself is ported)
+#define ACTIVE_GEOSETS_MAX 64
+
+static void apply_player_geosets() {
+  u32 active[ACTIVE_GEOSETS_MAX];
+  u32 active_count =
+      pe_model_default_geosets(&player_model, active, ACTIVE_GEOSETS_MAX);
+  if (active_count > ACTIVE_GEOSETS_MAX)
+    active_count = ACTIVE_GEOSETS_MAX;
+
+  LOG("pwow: default geosets=[");
+  for (u32 i = 0; i < active_count; i++)
+    LOG("%u ", active[i]);
+  LOG("]\n");
+
+  //erase the default member of every group equipment below might replace -
+  //WoWee's eraseGroup(), groups 4 gloves, 5 boots, 8 sleeves, 13 pants, 15
+  //cape, 18 belt
+  static const u32 erase_groups[] = {4, 5, 8, 13, 15, 18};
+  u32 kept = 0;
+  for (u32 i = 0; i < active_count; i++) {
+    bool erase = false;
+    for (u32 g = 0; g < COUNT_OF(erase_groups); g++)
+      if (active[i] / 100 == erase_groups[g])
+        erase = true;
+    if (!erase)
+      active[kept++] = active[i];
+  }
+  active_count = kept;
+
+  u32 geoset_gloves = pick_geoset(GEOSET_BARE_FOREARMS, GEOSET_BARE_FOREARMS);
+  u32 geoset_boots = pick_geoset(GEOSET_BARE_SHINS, GEOSET_BARE_SHINS);
+  u32 geoset_sleeves = pick_geoset(GEOSET_BARE_SLEEVES, GEOSET_BARE_SLEEVES);
+  u32 geoset_pants = pick_geoset(GEOSET_BARE_PANTS, GEOSET_BARE_PANTS);
+
+  //chest/shirt/robe -> sleeves (group 8); a robe's second geoset column
+  //also names its kilt over the legs (group 13) - WoWee's kRobeKiltBare
+  {
+    static const u32 wanted[] = {INVTYPE_BODY, INVTYPE_CHEST, INVTYPE_ROBE};
+    int slot = find_slot_by_inv_type(wanted, COUNT_OF(wanted));
+    if (slot >= 0 && player_equip_slots[slot].have_display) {
+      u32 gg1 = player_equip_slots[slot].display.geoset_group1;
+      if (gg1 > 0)
+        geoset_sleeves = pick_geoset(equipped_geoset(GEOSET_BARE_SLEEVES, gg1),
+                                     GEOSET_BARE_SLEEVES);
+      u32 gg3 = player_equip_slots[slot].display.geoset_group3;
+      if (gg3 > 0)
+        geoset_pants = pick_geoset(equipped_geoset(GEOSET_BARE_PANTS, gg3),
+                                   GEOSET_BARE_PANTS);
+    }
+  }
+  //legs -> pants (group 13)
+  {
+    static const u32 wanted[] = {INVTYPE_LEGS};
+    int slot = find_slot_by_inv_type(wanted, COUNT_OF(wanted));
+    if (slot >= 0 && player_equip_slots[slot].have_display) {
+      u32 gg1 = player_equip_slots[slot].display.geoset_group1;
+      if (gg1 > 0)
+        geoset_pants = pick_geoset(equipped_geoset(GEOSET_BARE_PANTS, gg1),
+                                   GEOSET_BARE_PANTS);
+    }
+  }
+  //feet -> shins (group 5)
+  {
+    static const u32 wanted[] = {INVTYPE_FEET};
+    int slot = find_slot_by_inv_type(wanted, COUNT_OF(wanted));
+    if (slot >= 0 && player_equip_slots[slot].have_display) {
+      u32 gg1 = player_equip_slots[slot].display.geoset_group1;
+      if (gg1 > 0)
+        geoset_boots = pick_geoset(equipped_geoset(GEOSET_BARE_SHINS, gg1),
+                                   GEOSET_BARE_SHINS);
+    }
+  }
+  //hands -> forearms (group 4)
+  {
+    static const u32 wanted[] = {INVTYPE_HANDS};
+    int slot = find_slot_by_inv_type(wanted, COUNT_OF(wanted));
+    if (slot >= 0 && player_equip_slots[slot].have_display) {
+      u32 gg1 = player_equip_slots[slot].display.geoset_group1;
+      if (gg1 > 0)
+        geoset_gloves = pick_geoset(equipped_geoset(GEOSET_BARE_FOREARMS, gg1),
+                                    GEOSET_BARE_FOREARMS);
+    }
+  }
+  //wrists -> sleeves (group 8), only if chest/shirt/robe didn't already set it
+  {
+    static const u32 wanted[] = {INVTYPE_WRISTS};
+    int slot = find_slot_by_inv_type(wanted, COUNT_OF(wanted));
+    if (slot >= 0 && player_equip_slots[slot].have_display &&
+        geoset_sleeves == GEOSET_BARE_SLEEVES) {
+      u32 gg1 = player_equip_slots[slot].display.geoset_group1;
+      if (gg1 > 0)
+        geoset_sleeves = pick_geoset(equipped_geoset(GEOSET_BARE_SLEEVES, gg1),
+                                     GEOSET_BARE_SLEEVES);
+    }
+  }
+  //waist -> belt (group 18); the base buckle variant even with nothing
+  //equipped, not nothing at all - the group was erased above
+  u32 geoset_belt;
+  {
+    static const u32 wanted[] = {INVTYPE_WAIST};
+    int slot = find_slot_by_inv_type(wanted, COUNT_OF(wanted));
+    u32 gg1 = (slot >= 0 && player_equip_slots[slot].have_display)
+                  ? player_equip_slots[slot].display.geoset_group1
+                  : 0;
+    geoset_belt = pick_geoset(
+        gg1 > 0 ? equipped_geoset(GEOSET_BELT_BASE, gg1) : 0, GEOSET_BELT_BASE);
+  }
+  //back/cloak (group 15)
+  u32 geoset_cape;
+  {
+    static const u32 wanted[] = {INVTYPE_CLOAK};
+    bool has_cloak = find_slot_by_inv_type(wanted, COUNT_OF(wanted)) >= 0;
+    geoset_cape =
+        pick_geoset(has_cloak ? GEOSET_WITH_CAPE : GEOSET_NO_CAPE,
+                   GEOSET_NO_CAPE);
+  }
+  //tabard - a fixed base variant only; no per-tabard art (emblem texture) yet
+  bool has_tabard;
+  {
+    static const u32 wanted[] = {INVTYPE_TABARD};
+    has_tabard = find_slot_by_inv_type(wanted, COUNT_OF(wanted)) >= 0;
+  }
+
+  u32 overrides[] = {geoset_gloves, geoset_boots,  geoset_sleeves,
+                    geoset_pants,  geoset_belt,   geoset_cape,
+                    has_tabard ? (u32)GEOSET_DEFAULT_TABARD : 0};
+  for (u32 i = 0; i < COUNT_OF(overrides); i++)
+    if (overrides[i] != 0 && active_count < ACTIVE_GEOSETS_MAX)
+      active[active_count++] = overrides[i];
+
+  LOG("pwow: geosets gloves=%u boots=%u sleeves=%u pants=%u belt=%u cape=%u "
+     "tabard=%d active=[",
+     geoset_gloves, geoset_boots, geoset_sleeves, geoset_pants, geoset_belt,
+     geoset_cape, has_tabard);
+  for (u32 i = 0; i < active_count; i++)
+    LOG("%u ", active[i]);
+  LOG("]\n");
+
+  pe_model_set_active_geosets(&player_model, active, active_count);
+}
+
+//call every live-mode frame, after pe_wowworld_poll(): for any equip slot
+//whose PLAYER_VISIBLE_ITEM entry has changed since last seen, resolves it
+//to a display id (CMSG_ITEM_QUERY_SINGLE), looks that up in
+//ItemDisplayInfo.dbc, and re-applies the player's active geosets if
+//anything actually changed. the six body-region textures ItemDisplayInfo
+//also names are still only logged, not composited onto the player's skin -
+//see PItemDisplayInfo's own doc comment
+static void sync_player_equipment() {
+  if (!npc_state.player_equipment.valid)
+    return;
+
+  bool changed = false;
+
+  for (int slot = 0; slot < PE_WOWOBJECT_PLAYER_EQUIP_SLOTS; slot++) {
+    u32 entry = npc_state.player_equipment.item_entry[slot];
+    PlayerEquipSlot *equip = &player_equip_slots[slot];
+    if (entry == equip->resolved_entry)
+      continue;
+
+    equip->resolved_entry = entry;
+    equip->have_info = false;
+    equip->have_display = false;
+    changed = true;
+    if (entry == 0)
+      continue;
+
+    char error[PE_WOWWORLD_ERROR_MAX];
+    if (!pe_wowworld_query_item(&world_conn, &npc_state, entry, &equip->info,
+                               error, sizeof(error))) {
+      LOG("pwow: equip slot %d entry=%u: %s\n", slot, entry, error);
+      continue;
+    }
+    equip->have_info = true;
+
+    LOG("pwow: equip slot %d entry=%u -> displayInfo=%u invType=%u\n", slot,
+        entry, equip->info.display_info_id, equip->info.inventory_type);
+
+    if (!resolve_item_display_info(equip->info.display_info_id,
+                                   &equip->display)) {
+      LOG("pwow: displayInfo=%u: no ItemDisplayInfo.dbc row\n",
+          equip->info.display_info_id);
+      continue;
+    }
+    equip->have_display = true;
+
+    LOG("pwow:   geosetGroup1=%u geosetGroup3=%u torso=%s/%s legs=%s/%s "
+       "arm=%s/%s hand=%s foot=%s\n",
+       equip->display.geoset_group1, equip->display.geoset_group3,
+       equip->display.texture_torso_upper, equip->display.texture_torso_lower,
+       equip->display.texture_leg_upper, equip->display.texture_leg_lower,
+       equip->display.texture_arm_upper, equip->display.texture_arm_lower,
+       equip->display.texture_hand, equip->display.texture_foot);
+  }
+
+  if (changed)
+    apply_player_geosets();
+}
+
 static const char *map = DEFAULT_MAP;
 static int start_tile_x = DEFAULT_TILE_X;
 static int start_tile_y = DEFAULT_TILE_Y;
@@ -759,6 +1133,7 @@ static void update_live_character(float seconds) {
 static void pwow_update() {
   if (live_mode) {
     pe_wowworld_poll(&world_conn, &npc_state);
+    sync_player_equipment();
     pe_wowobject_state_tick(&npc_state, delta_time);
     creatures_sync(&npc_state);
     update_live_character(delta_time);
@@ -859,9 +1234,15 @@ static void live_login(const char *host, int port, const char *account,
     exit(1);
   }
 
+  //before player_login, not after: the player's own first CREATE_OBJECT -
+  //the one PLAYER_VISIBLE_ITEM_1_0..19_0 actually arrives in - is read
+  //inside that call's own wait loop, and npc_state can't tell it apart
+  //from anyone else's object update without local_player_guid set first
+  pe_wowobject_set_local_player_guid(&npc_state, characters[0].guid);
+
   PWowLoginResult login;
-  if (!pe_wowworld_player_login(&world_conn, characters[0].guid, &login,
-                                error, sizeof(error))) {
+  if (!pe_wowworld_player_login(&world_conn, &npc_state, characters[0].guid,
+                                &login, error, sizeof(error))) {
     fprintf(stderr, "player login failed: %s\n", error);
     exit(1);
   }

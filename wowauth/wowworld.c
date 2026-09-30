@@ -19,6 +19,8 @@
 #define OP_SMSG_UPDATE_OBJECT 169
 #define OP_SMSG_COMPRESSED_UPDATE_OBJECT 502
 #define OP_SMSG_MONSTER_MOVE 221
+#define OP_CMSG_ITEM_QUERY_SINGLE 86
+#define OP_SMSG_ITEM_QUERY_SINGLE_RESPONSE 88
 
 //SharedDefines.h's ResponseCodes enum, position 12 (RESPONSE_SUCCESS..
 //CSTATUS_AUTHENTICATING fill 0..11 first)
@@ -276,8 +278,8 @@ bool pe_wowworld_char_enum(PWowWorld *world, PWowCharacter *out, int out_max,
   return true;
 }
 
-bool pe_wowworld_player_login(PWowWorld *world, u64 guid,
-                              PWowLoginResult *out, char *error,
+bool pe_wowworld_player_login(PWowWorld *world, PWowObjectState *state,
+                              u64 guid, PWowLoginResult *out, char *error,
                               int error_max) {
   WBuf req;
   req.len = 0;
@@ -300,7 +302,13 @@ bool pe_wowworld_player_login(PWowWorld *world, u64 guid,
           "disconnected while waiting for SMSG_LOGIN_VERIFY_WORLD");
       return false;
     }
-    if (opcode == OP_SMSG_LOGIN_VERIFY_WORLD) {
+    if (opcode == OP_SMSG_UPDATE_OBJECT)
+      pe_wowobject_handle_packet(state, payload, payload_len, false);
+    else if (opcode == OP_SMSG_COMPRESSED_UPDATE_OBJECT)
+      pe_wowobject_handle_packet(state, payload, payload_len, true);
+    else if (opcode == OP_SMSG_MONSTER_MOVE)
+      pe_wowobject_handle_monster_move(state, payload, payload_len);
+    else if (opcode == OP_SMSG_LOGIN_VERIFY_WORLD) {
       found = true;
       break;
     }
@@ -319,6 +327,81 @@ bool pe_wowworld_player_login(PWowWorld *world, u64 guid,
   out->y = wbuf_read_float(&buf);
   out->z = wbuf_read_float(&buf);
   out->o = wbuf_read_float(&buf);
+
+  return true;
+}
+
+bool pe_wowworld_query_item(PWowWorld *world, PWowObjectState *state,
+                            u32 item_entry, PWowItemInfo *out, char *error,
+                            int error_max) {
+  WBuf req;
+  req.len = 0;
+  wbuf_u32(&req, item_entry);
+  wbuf_u64(&req, 0); //QueryItem's guid field, only meaningful for an item
+                     //already in a bag the client has open - always 0 for a
+                     //plain lookup by entry, same as a real client sends
+                     //for gear it only knows about from someone else's
+                     //visible-item fields
+
+  if (!pe_wowworld_send_packet(world, OP_CMSG_ITEM_QUERY_SINGLE, req.data,
+                               req.len)) {
+    fail(error, error_max, "failed sending CMSG_ITEM_QUERY_SINGLE");
+    return false;
+  }
+
+  u8 payload[PE_WOWWORLD_PACKET_MAX];
+  u16 opcode;
+  int payload_len = 0;
+  bool found = false;
+  for (int attempt = 0; attempt < WAIT_FOR_OPCODE_ATTEMPTS; attempt++) {
+    if (!pe_wowworld_read_packet(world, &opcode, payload, sizeof(payload),
+                                 &payload_len)) {
+      fail(error, error_max,
+          "disconnected while waiting for SMSG_ITEM_QUERY_SINGLE_RESPONSE");
+      return false;
+    }
+    if (opcode == OP_SMSG_UPDATE_OBJECT)
+      pe_wowobject_handle_packet(state, payload, payload_len, false);
+    else if (opcode == OP_SMSG_COMPRESSED_UPDATE_OBJECT)
+      pe_wowobject_handle_packet(state, payload, payload_len, true);
+    else if (opcode == OP_SMSG_MONSTER_MOVE)
+      pe_wowobject_handle_monster_move(state, payload, payload_len);
+    else if (opcode == OP_SMSG_ITEM_QUERY_SINGLE_RESPONSE) {
+      found = true;
+      break;
+    }
+  }
+  if (!found) {
+    fail(error, error_max, "never saw SMSG_ITEM_QUERY_SINGLE_RESPONSE");
+    return false;
+  }
+
+  //WorldSession::HandleItemQuerySingleOpcode (ItemHandler.cpp): an unknown
+  //or undiscovered item entry gets a bare 4-byte reply of
+  //itemEntry|0x80000000 instead of the full record below
+  if (payload_len <= 4) {
+    fail(error, error_max, "server has no such item entry");
+    return false;
+  }
+
+  WBuf buf;
+  memcpy(buf.data, payload, payload_len);
+  buf.len = payload_len;
+  buf.pos = 0;
+  wbuf_read_u32(&buf); //ItemId, == item_entry
+  wbuf_read_u32(&buf); //Class
+  wbuf_read_u32(&buf); //SubClass
+  char scratch[256];
+  wbuf_read_string(&buf, scratch, sizeof(scratch)); //Name1
+  wbuf_read_string(&buf, scratch, sizeof(scratch)); //Name2, always empty
+  wbuf_read_string(&buf, scratch, sizeof(scratch)); //Name3, always empty
+  wbuf_read_string(&buf, scratch, sizeof(scratch)); //Name4, always empty
+  out->display_info_id = wbuf_read_u32(&buf);
+  wbuf_read_u32(&buf); //Quality
+  wbuf_read_u32(&buf); //Flags
+  wbuf_read_u32(&buf); //BuyPrice
+  wbuf_read_u32(&buf); //SellPrice
+  out->inventory_type = wbuf_read_u32(&buf);
 
   return true;
 }

@@ -43,10 +43,39 @@ typedef struct PWowCreature {
   float move_final_facing;
 } PWowCreature;
 
+//PLAYER_VISIBLE_ITEM_1_0..19_0 (UpdateFields_1_12_1.h, confirmed against
+//vmangos - the exact server this talks to): one dword entry per equip slot,
+//in Player::EquipmentSlots order (head, neck, shoulders, ... tabard), same
+//19 slots wowworld.c's char_enum comment already skips over. entry, not a
+//display id or guid - resolving it to an ItemDisplayInfo id needs a
+//CMSG_ITEM_QUERY_SINGLE round trip (pe_wowworld_query_item)
+#define PE_WOWOBJECT_PLAYER_EQUIP_SLOTS 19
+
+typedef struct PWowPlayerEquipment {
+  //false until at least one CREATE_OBJECT/VALUES block for the local
+  //player has actually been parsed - item_entry is all zero either way, so
+  //this is the only way to tell "confirmed empty-handed" from "not seen yet"
+  bool valid;
+  u32 item_entry[PE_WOWOBJECT_PLAYER_EQUIP_SLOTS]; //0 = empty slot
+} PWowPlayerEquipment;
+
 typedef struct PWowObjectState {
   PWowCreature creatures[PE_WOWOBJECT_CREATURES_MAX];
   int count;
+
+  //sender's own guid, so pe_wowobject_handle_packet can tell "the local
+  //player's own object" apart from every other player passing through -
+  //set once via pe_wowobject_set_local_player_guid(), right after
+  //pe_wowworld_player_login() returns it (main.c already has it there for
+  //characters[0].guid, the one it logged in as)
+  u64 local_player_guid;
+  PWowPlayerEquipment player_equipment;
 } PWowObjectState;
+
+//call once, right after login, before the first pe_wowworld_poll(): without
+//this, the local player's own CREATE_OBJECT/VALUES blocks are indistinguishable
+//from any other player's and player_equipment is never filled in
+void pe_wowobject_set_local_player_guid(PWowObjectState *state, u64 guid);
 
 //parses one SMSG_UPDATE_OBJECT (or, with compressed true, SMSG_COMPRESSED_
 //UPDATE_OBJECT - decompressed first) payload and folds any creature blocks

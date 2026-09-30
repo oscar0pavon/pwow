@@ -65,11 +65,17 @@ typedef struct PWowLoginResult {
 //sends CMSG_PLAYER_LOGIN for guid and blocks for SMSG_LOGIN_VERIFY_WORLD -
 //the server's confirmation that the character is now actually placed on a
 //map, which is what starts the flow of SMSG_UPDATE_OBJECT packets for
-//nearby creatures. every packet between the request and that confirmation
-//(initial spells, action bars, reputation, the player's own object update...)
-//is read and discarded; parsing those is a later step's problem
-bool pe_wowworld_player_login(PWowWorld *world, u64 guid,
-                              PWowLoginResult *out, char *error,
+//nearby creatures. object-update and monster-move packets seen while
+//waiting are folded into state (same as pe_wowworld_poll would do with
+//them) rather than discarded - the player's own first CREATE_OBJECT, the
+//one PLAYER_VISIBLE_ITEM_1_0..19_0 actually arrives in, is one of them and
+//is otherwise gone for good by the time this returns. call
+//pe_wowobject_set_local_player_guid(state, guid) before this, not after -
+//too late to matter once this has already read past that block. everything
+//else on the wire (initial spells, action bars, reputation...) is still
+//read and discarded
+bool pe_wowworld_player_login(PWowWorld *world, PWowObjectState *state,
+                              u64 guid, PWowLoginResult *out, char *error,
                               int error_max);
 
 //call once per frame after a successful pe_wowworld_connect (and, normally,
@@ -82,5 +88,26 @@ bool pe_wowworld_player_login(PWowWorld *world, u64 guid,
 //for its own confirmation - pwow only tracks creatures right now. sets
 //world->connected false if the connection drops while draining
 void pe_wowworld_poll(PWowWorld *world, PWowObjectState *state);
+
+typedef struct PWowItemInfo {
+  u32 display_info_id; //ItemDisplayInfo.dbc row id, 0 if the item has none
+  u32 inventory_type;  //ItemPrototype::InventoryType - which equip slot(s)
+                       //this item's own kind goes in, independent of which
+                       //of the 19 PLAYER_VISIBLE_ITEM slots it was read from
+} PWowItemInfo;
+
+//sends CMSG_ITEM_QUERY_SINGLE for item_entry (an entry off
+//PWowPlayerEquipment.item_entry, not a display id or a guid) and blocks for
+//SMSG_ITEM_QUERY_SINGLE_RESPONSE - there is no local item-template data
+//this could resolve the answer from instead (see TODO.md's equipment item,
+//"needs ... an ItemDisplayInfo.dbc reader ... or a vmangos DB read"; this
+//is the network side of that same question). object-update and monster-move
+//packets that arrive while waiting are still folded into state, exactly
+//like pe_wowworld_poll would, rather than silently discarded the way
+//pe_wowworld_player_login discards everything while it waits - a slow
+//reply here is not rare enough to risk desyncing the creature stream over
+bool pe_wowworld_query_item(PWowWorld *world, PWowObjectState *state,
+                            u32 item_entry, PWowItemInfo *out, char *error,
+                            int error_max);
 
 #endif

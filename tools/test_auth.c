@@ -92,9 +92,11 @@ int main(int argc, char **argv) {
 
   printf("\nlogging in as %s ...\n", characters[0].name);
 
+  PWowObjectState object_state;
+  memset(&object_state, 0, sizeof(object_state));
   PWowLoginResult login;
-  if (!pe_wowworld_player_login(&world, characters[0].guid, &login,
-                                world_error, sizeof(world_error))) {
+  if (!pe_wowworld_player_login(&world, &object_state, characters[0].guid,
+                                &login, world_error, sizeof(world_error))) {
     fprintf(stderr, "player login failed: %s\n", world_error);
     pe_wowworld_close(&world);
     return 1;
