@@ -14,11 +14,8 @@
 //given an instance here. models/textures must already be converted by
 //prepare_creatures.sh; one that is not is silently skipped too
 
-//creates the shared skinned shader every creature model draws with, so a
-//species plays its idle clip rather than standing frozen in bind pose - see
-//CreatureTemplate's skin field (creatures.c) for what is and isn't
-//per-instance about that. call once, after pe_vk_init (same requirement
-//pe_text_init has)
+//creates the shared skinned shader every creature model draws with. call
+//once, after pe_vk_init (same requirement pe_text_init has)
 void creatures_init(void);
 
 //call once a frame, after pe_wowworld_poll(): creates a GPU instance for

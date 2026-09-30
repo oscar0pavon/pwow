@@ -162,17 +162,13 @@ static ResolvedDisplay *resolve_display(u32 display_id) {
 typedef struct CreatureTemplate {
   char glb_path[256];
   PModel model;
-  //one shared pose for every instance of this species: pe_vk_load_skin()'s
-  //Node tree and joint-matrix storage buffer belong to the species, not to
-  //any one creature, so every tracked tallstrider (say) plays the same clip
-  //in lockstep rather than each having its own independent phase - real
-  //per-instance animation would need its own Node tree/storage buffer per
-  //instance, which also means its own copy of the mesh the way
-  //pe_vk_load_skin() is built today (it loads geometry and skin together),
-  //undoing the geometry sharing pe_vk_model_instance_skinned() exists for.
-  //left as a known simplification, same as SMSG_MONSTER_MOVE's cyclic-path
-  //gap (wowobject.c)
+  //the species' own mesh, joint topology and animation clips - read-only
+  //once loaded. never drawn or played directly and never shared with an
+  //instance's own skin; pe_vk_skin_instance() copies out of this per
+  //instance (see CreatureInstance below), and idle_animation names the clip
+  //each new instance should start on
   PSkin skin;
+  char idle_animation[48];
   float foot_offset;
 } CreatureTemplate;
 
@@ -254,9 +250,12 @@ static CreatureTemplate *find_or_load_template(const ResolvedDisplay *resolved) 
 
   //not every species has a clip literally named "Stand" (confirmed live:
   //one did not, and silently rendered nothing per the paragraph above,
-  //before the pe_anim_nodes_update() seed above existed) - play whatever
-  //its first clip actually is instead of leaving it static when that
-  //happens, rather than hardcoding every species' own idle clip name
+  //before the pe_anim_nodes_update() seed above existed) - fall back to
+  //whatever its first clip actually is instead of leaving every instance
+  //static when that happens, rather than hardcoding every species' own
+  //idle clip name. recorded here, not played: this is the template, never
+  //drawn or posed itself - each instance plays it on its own copy, in
+  //find_or_load_template()'s caller
   const char *idle_animation = CREATURE_IDLE_ANIMATION;
   if (t->skin.animations.count > 0) {
     bool has_idle_clip = false;
@@ -271,8 +270,8 @@ static CreatureTemplate *find_or_load_template(const ResolvedDisplay *resolved) 
       PAnimation *first = array_get(&t->skin.animations, 0);
       idle_animation = first->name;
     }
-    play_animation_by_name(&t->skin, idle_animation, true);
   }
+  snprintf(t->idle_animation, sizeof(t->idle_animation), "%s", idle_animation);
 
   return t;
 }
@@ -284,6 +283,13 @@ static CreatureTemplate *find_or_load_template(const ResolvedDisplay *resolved) 
 typedef struct CreatureInstance {
   u64 guid;
   PModel model;
+  //this instance's own posable joints, animation clock and joint-matrix
+  //storage buffer - pe_vk_skin_instance() copies the species' template.skin
+  //into this rather than sharing it, so two creatures of the same species
+  //can be mid-idle at different phases (and, once something drives more
+  //than one clip per species, in different states entirely) instead of
+  //being locked to one shared pose
+  PSkin skin;
   float foot_offset;
   bool used;
 } CreatureInstance;
@@ -295,13 +301,23 @@ static CreatureInstance creature_instances[CREATURE_INSTANCES_MAX];
 //model.c), which unconditionally frees vertex_buffer.memory/index_buffer.
 //memory. pe_vk_model_instance() shares those with its template (and every
 //other instance of the same species) by design, so that would free
-//geometry still in use elsewhere
-static void release_creature_instance(PModel *model) {
+//geometry still in use elsewhere. skin's shader_storage_buffers_memory is
+//this instance's own (pe_vk_skin_instance() + pe_vk_skin_create_storage_
+//buffers()), never the template's, so freeing it here is the same kind of
+//instance-only cleanup as the uniform buffers below - the joints/animations
+//arrays it also owns are arena memory with no free, same as everything else
+//CPU-side here
+static void release_creature_instance(PModel *model, PSkin *skin) {
   for (int i = 0; i < model->uniform_buffers_memory.count; i++) {
     VkDeviceMemory *memory = array_get(&model->uniform_buffers_memory, i);
     vkFreeMemory(vk_device, *memory, NULL);
   }
   vkDestroyDescriptorPool(vk_device, model->descriptor_pool, NULL);
+
+  for (int i = 0; i < skin->shader_storage_buffers_memory.count; i++) {
+    VkDeviceMemory *memory = array_get(&skin->shader_storage_buffers_memory, i);
+    vkFreeMemory(vk_device, *memory, NULL);
+  }
 }
 
 void creatures_init(void) {
@@ -369,11 +385,24 @@ void creatures_sync(const PWowObjectState *npc_state) {
       if (!template)
         continue;
 
-      pe_vk_model_instance_skinned(&creature_instances[slot].model,
-                                   &template->model, &template->skin);
-      creature_instances[slot].guid = creature->guid;
-      creature_instances[slot].foot_offset = template->foot_offset;
-      creature_instances[slot].used = true;
+      CreatureInstance *inst = &creature_instances[slot];
+      pe_vk_skin_instance(&inst->skin, &template->skin);
+      pe_vk_skin_create_storage_buffers(&inst->skin);
+      pe_vk_model_instance_skinned(&inst->model, &template->model,
+                                   &inst->skin);
+
+      //seed a real pose immediately, same reason find_or_load_template()
+      //seeds the template's - skinned.vert's weighted sum of joint matrices
+      //has no safe zero fallback, and this instance's own storage buffer
+      //starts zeroed regardless of what the template's looked like
+      if (inst->skin.joints.count > 0)
+        pe_anim_nodes_update(&inst->skin);
+      if (inst->skin.animations.count > 0)
+        play_animation_by_name(&inst->skin, template->idle_animation, true);
+
+      inst->guid = creature->guid;
+      inst->foot_offset = template->foot_offset;
+      inst->used = true;
     }
 
     touched[slot] = true;
@@ -397,7 +426,8 @@ void creatures_sync(const PWowObjectState *npc_state) {
 
   for (int s = 0; s < CREATURE_INSTANCES_MAX; s++) {
     if (creature_instances[s].used && !touched[s]) {
-      release_creature_instance(&creature_instances[s].model);
+      release_creature_instance(&creature_instances[s].model,
+                                &creature_instances[s].skin);
       creature_instances[s].used = false;
     }
   }
@@ -405,15 +435,15 @@ void creatures_sync(const PWowObjectState *npc_state) {
 
 void creatures_draw(VkCommandBuffer *command, uint32_t image_index,
                     mat4 view, mat4 projection) {
-  //one joint-matrix upload per species per frame, not per instance - every
-  //instance of a species reads the same shared storage buffer (see
-  //CreatureTemplate's skin field comment above)
-  for (int t = 0; t < creature_template_count; t++)
-    pe_vk_skin_send_storage_buffer(&creature_templates[t].skin, image_index);
-
   for (int s = 0; s < CREATURE_INSTANCES_MAX; s++) {
     if (!creature_instances[s].used)
       continue;
+
+    //this instance's own joint matrices, computed for this frame by
+    //play_animation_list() (main.c) off its own animation clock - one
+    //upload per instance, not per species, now that each has its own
+    //storage buffer
+    pe_vk_skin_send_storage_buffer(&creature_instances[s].skin, image_index);
 
     PModel *instance = &creature_instances[s].model;
     PUniformBufferObject *ubo = &instance->uniform_buffer_object;
