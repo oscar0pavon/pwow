@@ -1,5 +1,6 @@
 #include "creatures.h"
 
+#include <engine/animation/animation.h>
 #include <engine/array.h>
 #include <engine/files.h>
 #include <engine/images.h>
@@ -12,9 +13,12 @@
 #include <engine/renderer/uniform_buffer.h>
 #include <engine/renderer/vk_vertex.h>
 #include <engine/renderer/vulkan.h>
+#include <engine/skeletal.h>
+#include <engine/vertex.h>
 #include <engine/wowauth/wowdbc.h>
 
 #include <ctype.h>
+#include <float.h>
 #include <string.h>
 
 #define CREATURE_DISPLAY_DBC_PATH "data/dbc/CreatureDisplayInfo.dbc"
@@ -146,23 +150,63 @@ static ResolvedDisplay *resolve_display(u32 display_id) {
 }
 
 //---------------------------------------------------------------------------
-//one loaded PModel per unique species (glb path), shared by every instance
-//of it via pe_vk_model_instance()
+//one loaded PModel+PSkin per unique species (glb path), shared by every
+//instance of it via pe_vk_model_instance_skinned()
 //---------------------------------------------------------------------------
+
+//the idle clip every instance of a species plays, looped, chosen once for
+//the whole species rather than per creature - see the comment on skin in
+//CreatureTemplate below for why
+#define CREATURE_IDLE_ANIMATION "Stand"
 
 typedef struct CreatureTemplate {
   char glb_path[256];
   PModel model;
+  //one shared pose for every instance of this species: pe_vk_load_skin()'s
+  //Node tree and joint-matrix storage buffer belong to the species, not to
+  //any one creature, so every tracked tallstrider (say) plays the same clip
+  //in lockstep rather than each having its own independent phase - real
+  //per-instance animation would need its own Node tree/storage buffer per
+  //instance, which also means its own copy of the mesh the way
+  //pe_vk_load_skin() is built today (it loads geometry and skin together),
+  //undoing the geometry sharing pe_vk_model_instance_skinned() exists for.
+  //left as a known simplification, same as SMSG_MONSTER_MOVE's cyclic-path
+  //gap (wowobject.c)
+  PSkin skin;
+  float foot_offset;
 } CreatureTemplate;
 
 #define CREATURE_TEMPLATES_MAX 16
 static CreatureTemplate creature_templates[CREATURE_TEMPLATES_MAX];
 static int creature_template_count;
 
-static PModel *find_or_load_template(const ResolvedDisplay *resolved) {
+//SMSG_UPDATE_OBJECT's x/y/z is the creature's feet, standing on the ground -
+//same as the player's, which player_load() (main.c) corrects for with a
+//constant measured against taurenmale.glb's Stand pose. A creature template
+//is drawn unposed (nothing here plays an animation - see creatures.h), so
+//its own bind-pose mesh *is* what's on screen, and the lowest vertex of that
+//mesh is exactly how far its root sits above its own feet: no forward-
+//kinematics simulation needed, unlike the player's animated case. m22gltf
+//writes no accessor min/max (nothing here reads one), so it's found by
+//scanning the loaded vertices directly rather than trusting glTF bounds
+//that were never written. The player's own +90-about-X axis fix (m22gltf
+//bakes -90 about X on export) carries a raw glTF Y straight into world Z
+//unchanged - same derivation as PLAYER_FOOT_OFFSET's comment - so the
+//lowest vertex's Y is the offset needed, unmodified
+static float compute_foot_offset(PModel *model) {
+  float min_y = FLT_MAX;
+  for (int i = 0; i < model->vertex_array.count; i++) {
+    PVertex *vertex = array_get(&model->vertex_array, i);
+    if (vertex->position[1] < min_y)
+      min_y = vertex->position[1];
+  }
+  return model->vertex_array.count > 0 ? -min_y : 0.0f;
+}
+
+static CreatureTemplate *find_or_load_template(const ResolvedDisplay *resolved) {
   for (int i = 0; i < creature_template_count; i++)
     if (strcmp(creature_templates[i].glb_path, resolved->glb_path) == 0)
-      return &creature_templates[i].model;
+      return &creature_templates[i];
 
   if (creature_template_count >= CREATURE_TEMPLATES_MAX)
     return NULL;
@@ -170,20 +214,19 @@ static PModel *find_or_load_template(const ResolvedDisplay *resolved) {
   CreatureTemplate *t = &creature_templates[creature_template_count++];
   snprintf(t->glb_path, sizeof(t->glb_path), "%s", resolved->glb_path);
 
-  //pe_vk_load_model() builds the mesh, buffers and a descriptor pool/sets of
-  //its own, but always against pe_vk_descriptor_set_layout - the uniform-
-  //buffer-only layout, with no texture binding at all. model.c's loader
-  //fills model->texture with the glb's own baked-in material texture as it
-  //parses the mesh (pe_load_material_texture()), so that part is already
-  //done by the time this returns; what isn't done is a descriptor set that
-  //actually points at it. Same fix as player_load() applies to the skinned
-  //path: throw away the plain sets pe_vk_load_model() made and remake them
-  //against the textured layout, which diffuse_frag's sampler at binding 1
-  //actually needs - skipping this left the sampler reading whatever
-  //uninitialised memory the unwritten binding happened to hold, which is
-  //what the corrupted, noisy creature textures actually were
-  pe_vk_load_model(&t->model, t->glb_path);
+  //pe_vk_load_skin() is pe_vk_load_model() plus, when the glTF carries one
+  //(every creature .m2 does - see m22gltf.c), the joint hierarchy and
+  //animation clips into t->skin; t->model gets the mesh exactly like the
+  //plain loader would. Both still only build a descriptor pool/sets against
+  //pe_vk_descriptor_set_layout - the uniform-buffer-only layout - which
+  //neither the texture skinned.vert's joint storage buffer nor
+  //diffuse_frag's sampler at binding 1 are declared in. Same fix
+  //player_load() applies: throw those plain sets away and remake them
+  //against the skinned layout, which does declare both, then point the
+  //storage-buffer binding at this species' own joint matrices
+  pe_vk_load_skin(&t->skin, &t->model, t->glb_path);
   t->model.shader = creature_shader;
+  t->foot_offset = compute_foot_offset(&t->model);
 
   //present only when the model's own texture slot is a replaceable type
   //m22gltf leaves unresolved (model_texture(), m22gltf.c) - a display's own
@@ -191,11 +234,47 @@ static PModel *find_or_load_template(const ResolvedDisplay *resolved) {
   if (resolved->texture_path[0] != '\0')
     pe_load_texture(resolved->texture_path, &t->model.texture);
 
-  pe_vk_create_descriptor_sets(&t->model, pe_vk_descriptor_set_layout_with_texture,
+  pe_vk_create_descriptor_sets(&t->model, pe_vk_descriptor_set_layout_skinned,
                                &main_render_target);
-  pe_vk_descriptor_with_image_update(&t->model, &main_render_target);
+  pe_vk_skin_create_storage_buffers(&t->skin);
+  pe_vk_descriptor_skinned_update(&t->model, &t->skin, &main_render_target);
 
-  return &t->model;
+  //skinned.vert's skin_mat is a weighted sum of joint matrices with no safe
+  //zero fallback - a joint this never wrote into (node_uniform starts
+  //zeroed, same as the rest of a freshly zero-initialized static
+  //CreatureTemplate) collapses every vertex weighted to it to the origin,
+  //which is what an un-posed skin actually looks like: not the bind pose,
+  //a point. Seed a real pose immediately, from whatever rest values
+  //pe_node_load() already put in each joint - the same values play_animation
+  //would overwrite once a clip actually starts touching them - so a species
+  //that ends up playing no clip at all still renders in its bind pose
+  //instead of vanishing
+  if (t->skin.joints.count > 0)
+    pe_anim_nodes_update(&t->skin);
+
+  //not every species has a clip literally named "Stand" (confirmed live:
+  //one did not, and silently rendered nothing per the paragraph above,
+  //before the pe_anim_nodes_update() seed above existed) - play whatever
+  //its first clip actually is instead of leaving it static when that
+  //happens, rather than hardcoding every species' own idle clip name
+  const char *idle_animation = CREATURE_IDLE_ANIMATION;
+  if (t->skin.animations.count > 0) {
+    bool has_idle_clip = false;
+    for (int i = 0; i < t->skin.animations.count; i++) {
+      Animation *animation = array_get(&t->skin.animations, i);
+      if (strcmp(animation->name, idle_animation) == 0) {
+        has_idle_clip = true;
+        break;
+      }
+    }
+    if (!has_idle_clip) {
+      Animation *first = array_get(&t->skin.animations, 0);
+      idle_animation = first->name;
+    }
+    play_animation_by_name(&t->skin, idle_animation, true);
+  }
+
+  return t;
 }
 
 //---------------------------------------------------------------------------
@@ -205,6 +284,7 @@ static PModel *find_or_load_template(const ResolvedDisplay *resolved) {
 typedef struct CreatureInstance {
   u64 guid;
   PModel model;
+  float foot_offset;
   bool used;
 } CreatureInstance;
 
@@ -228,28 +308,19 @@ void creatures_init(void) {
   PCreateShaderInfo shader_info;
   ZERO(shader_info);
   shader_info.out_shader = &creature_shader;
-  shader_info.vertex_path = file_diffuse_vert_spv;
+  //same pairing player_load() uses: file_skinned_spv does the joint-matrix
+  //skinning, file_diffuse_frag_spv samples a texture - creatures were drawn
+  //unposed (plain diffuse) before, which is why they never animated
+  shader_info.vertex_path = file_skinned_spv;
   shader_info.fragment_path = file_diffuse_frag_spv;
-  //pe_vk_pipeline_layout_with_descriptors (used here before) is built
-  //against pe_vk_descriptor_set_layout, which is uniform-buffer-only - no
-  //texture binding at all (it's what gui.c's flat-colour button quads
-  //pair it with, and they sample no texture). diffuse_frag.frag samples a
-  //sampler2D at binding 1, so that pairing left the pipeline's shader
-  //interface naming a binding the layout never declared. pe_vk_pipeline_
-  //layout3 is the one actually built (vulkan.c) against
-  //pe_vk_descriptor_set_layout_with_texture, which does declare it, and
-  //which find_or_load_template() below now allocates its descriptor sets
-  //from to match
-  shader_info.layout = pe_vk_pipeline_layout3;
+  shader_info.layout = pe_vk_pipeline_layout_skinned;
 
   //vertex_input left NULL gets the engine's default (position + uv only,
-  //shaders.c), but diffuse_vert.vert also declares color (location 1,
-  //unused - dead input) and normal (location 2, feeds the diffuse term) -
-  //the same gap player_load() hit for skinned.vert (VUID-VkGraphicsPipeline
-  //CreateInfo-Input-07904) and had to build a real vertex input for. Left
-  //as the default here, normal read garbage, so a creature's per vertex
-  //diffuse lighting was as undefined as its texture sampling was before the
-  //descriptor sets above were fixed
+  //shaders.c), but skinned.vert also declares color (location 1, unused -
+  //dead input), normal (location 2, feeds the diffuse term), joint
+  //(location 4) and weight (location 5) - the same gap player_load() hit
+  //(VUID-VkGraphicsPipelineCreateInfo-Input-07904) and had to build a real
+  //vertex input for
   PVertexAtrributes creature_attributes;
   ZERO(creature_attributes);
   creature_attributes.has_attributes = true;
@@ -257,6 +328,8 @@ void creatures_init(void) {
   creature_attributes.color = true;
   creature_attributes.normal = true;
   creature_attributes.uv = true;
+  creature_attributes.joint = true;
+  creature_attributes.weight = true;
   VkPipelineVertexInputStateCreateInfo creature_vertex_input =
       pe_vk_pipeline_get_default_vertex_input(&creature_attributes);
   shader_info.vertex_input = &creature_vertex_input;
@@ -292,12 +365,14 @@ void creatures_sync(const PWowObjectState *npc_state) {
       if (slot < 0)
         continue; //pool full - this creature waits for a slot to free up
 
-      PModel *template = find_or_load_template(resolved);
+      CreatureTemplate *template = find_or_load_template(resolved);
       if (!template)
         continue;
 
-      pe_vk_model_instance_textured(&creature_instances[slot].model, template);
+      pe_vk_model_instance_skinned(&creature_instances[slot].model,
+                                   &template->model, &template->skin);
       creature_instances[slot].guid = creature->guid;
+      creature_instances[slot].foot_offset = template->foot_offset;
       creature_instances[slot].used = true;
     }
 
@@ -307,13 +382,17 @@ void creatures_sync(const PWowObjectState *npc_state) {
     //pwow's own live-character facing which is tracked in degrees), then
     //undo m22gltf's -90-about-X Z-up-to-Y-up export bake - same
     //composition player_place() uses, and for the same reason: the facing
-    //turn has to happen before the up-axis fix, not after
+    //turn has to happen before the up-axis fix, not after. z is nudged up
+    //by foot_offset, the model's own bind-pose lowest vertex, so the wire's
+    //feet position isn't mistaken for the model root and the creature does
+    //not float or sink - see compute_foot_offset() above
     PModel *instance = &creature_instances[slot].model;
+    float render_z = creature->z + creature_instances[slot].foot_offset;
     glm_mat4_identity(instance->model_mat);
-    glm_translate(instance->model_mat, (vec3){creature->x, creature->y, creature->z});
+    glm_translate(instance->model_mat, (vec3){creature->x, creature->y, render_z});
     glm_rotate(instance->model_mat, creature->o, (vec3){0, 0, 1});
     glm_rotate(instance->model_mat, glm_rad(90.0f), (vec3){1, 0, 0});
-    glm_vec3_copy((vec3){creature->x, creature->y, creature->z}, instance->position);
+    glm_vec3_copy((vec3){creature->x, creature->y, render_z}, instance->position);
   }
 
   for (int s = 0; s < CREATURE_INSTANCES_MAX; s++) {
@@ -326,6 +405,12 @@ void creatures_sync(const PWowObjectState *npc_state) {
 
 void creatures_draw(VkCommandBuffer *command, uint32_t image_index,
                     mat4 view, mat4 projection) {
+  //one joint-matrix upload per species per frame, not per instance - every
+  //instance of a species reads the same shared storage buffer (see
+  //CreatureTemplate's skin field comment above)
+  for (int t = 0; t < creature_template_count; t++)
+    pe_vk_skin_send_storage_buffer(&creature_templates[t].skin, image_index);
+
   for (int s = 0; s < CREATURE_INSTANCES_MAX; s++) {
     if (!creature_instances[s].used)
       continue;
@@ -347,7 +432,7 @@ void creatures_draw(VkCommandBuffer *command, uint32_t image_index,
     PDrawModelCommand draw;
     ZERO(draw);
     draw.model = instance;
-    draw.layout = pe_vk_pipeline_layout3;
+    draw.layout = pe_vk_pipeline_layout_skinned;
     draw.command_buffer = *command;
     draw.image_index = image_index;
     pe_vk_draw_model(&draw);
