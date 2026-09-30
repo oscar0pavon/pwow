@@ -2,8 +2,8 @@
 //mangosd: logs in over SRP6, prints the realm list, then connects to the
 //first realm's world server and completes the CMSG_AUTH_SESSION handshake.
 //usage: test_auth <host> <port> <account> <password>
-#include <engine/wowauth/wowauth.h>
-#include <engine/wowauth/wowworld.h>
+#include <wowauth/wowauth.h>
+#include <wowauth/wowworld.h>
 
 #include <stdio.h>
 #include <stdlib.h>

@@ -3,7 +3,7 @@
 
 #include <cglm/cglm.h>
 #include <engine/renderer/vulkan.h>
-#include <engine/wowauth/wowobject.h>
+#include <wowauth/wowobject.h>
 
 //renders the "simple" (non-humanoid) creatures pe_wowworld_poll() tracks in
 //a PWowObjectState: one whose ExtendedDisplayInfoID is 0 in CreatureDisplayInfo.dbc,

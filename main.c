@@ -15,10 +15,10 @@
 #include <engine/text.h>
 #include <engine/time.h>
 #include <engine/window_manager.h>
-#include <engine/wowauth/wowauth.h>
-#include <engine/wowauth/wowdbc.h>
-#include <engine/wowauth/wowobject.h>
-#include <engine/wowauth/wowworld.h>
+#include <wowauth/wowauth.h>
+#include <wowauth/wowdbc.h>
+#include <wowauth/wowobject.h>
+#include <wowauth/wowworld.h>
 
 #include <ctype.h>
 #include <math.h>

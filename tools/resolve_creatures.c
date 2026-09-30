@@ -9,7 +9,7 @@
 //texture) pair, same "print what to do" convention adt2wot/m22wwb use for
 //prepare_tile.sh - unlike those, this links pengine to reuse wowdbc.h rather
 //than write a third WDBC parser, the same way test_auth links it for wowauth
-#include <engine/wowauth/wowdbc.h>
+#include <wowauth/wowdbc.h>
 
 #include <ctype.h>
 #include <stdio.h>

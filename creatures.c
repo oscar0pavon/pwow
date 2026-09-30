@@ -15,7 +15,7 @@
 #include <engine/renderer/vulkan.h>
 #include <engine/skeletal.h>
 #include <engine/vertex.h>
-#include <engine/wowauth/wowdbc.h>
+#include <wowauth/wowdbc.h>
 
 #include <ctype.h>
 #include <float.h>

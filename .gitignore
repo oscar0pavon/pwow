@@ -1,3 +1,5 @@
+*.o
+*.d
 pwow
 adt2wot
 wmo2wwb
