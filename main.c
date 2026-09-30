@@ -696,10 +696,13 @@ static void update_live_character(float seconds) {
   if (mouse.right.pressed) {
     player_facing = player_camera.yaw;
   } else {
+    //facing = (cos f, sin f, 0), so increasing it swings the nose toward
+    //+right (right = cross(Z, forward)) - a turn to the character's own
+    //right, not its left. turn_right adds, turn_left subtracts, to match
     if (in.turn_left)
-      player_facing += CHARACTER_TURN_SPEED_DEGREES * seconds;
-    if (in.turn_right)
       player_facing -= CHARACTER_TURN_SPEED_DEGREES * seconds;
+    if (in.turn_right)
+      player_facing += CHARACTER_TURN_SPEED_DEGREES * seconds;
     player_camera.yaw = player_facing;
   }
 
