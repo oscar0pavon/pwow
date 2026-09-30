@@ -50,6 +50,21 @@ history, credentials and file:line references behind these items.
      instance teardown (`creatures.c`'s `release_creature_instance()`) only
      frees the uniform buffers and descriptor pool an instance actually owns,
      deliberately not `pe_clean_model()`.
+   - **Done**: creatures animate, and switch clips with real movement state
+     instead of standing frozen on one idle pose forever. Needed the
+     per-instance animation fix (Animation item 2 below) first, or every
+     tallstrider on screen would have switched state in lockstep. Each
+     instance now plays its species' idle/walk/run clip (resolved by name
+     once per species, falling back to whichever clip the species actually
+     has, `creatures.c`'s `find_or_load_template()`) from `PWowCreature.
+     moving`/`.walking` (`wowauth/wowobject.h`) every frame -
+     `play_animation_by_name()` no-ops on a repeat request, so this costs
+     nothing once a creature settles into a state. `walking` is the real
+     `PRE_WOTLK_RUNMODE` bit off the last `SMSG_MONSTER_MOVE`'s own spline
+     flags (WoWee's `spline_packet.hpp`: set means Run, clear means Walk for
+     this pre-WotLK wire), not a guess - `pe_wowobject_handle_monster_move()`
+     was already parsing that flags word for the Catmull-Rom/cyclic bits and
+     throwing the rest away.
 3. Humanoid NPCs (most of what's actually near Camp Narache - the Tauren
    quest-givers) still render as nothing: their `CreatureDisplayInfo` row
    points at `CreatureDisplayInfoExtra` (race/gender/skin/face/hair/
@@ -110,11 +125,19 @@ in `m22gltf.c`). Remaining gaps, in the order they'll probably bite:
    (`play_animation_by_name` drops the old clip and starts the new one at
    time 0). WoWee's own `M2Sequence.blendTime` exists in the source data and
    isn't read; pengine has no blend-weight concept at all.
-2. **No per-instance animation state.** `Animation.time`/`.loop` live on the
-   shared `Animation` struct inside `PSkin.animations`, not per playing
-   instance — fine for pwow's one player character, but breaks the moment two
-   instances of the same skeleton (two NPCs of the same race) need to play
-   different clips at different times.
+2. **Done**: per-instance animation state. `Animation.time`/`.loop` and a
+   joint's `translation`/`rotation` all lived on the one `PSkin` a species'
+   `pe_vk_load_skin()` call produced, and every instance shared that same
+   `PSkin` pointer — fine for pwow's one player character, but every NPC of a
+   kind played one shared clip in lockstep, since `play_animation_by_name()`/
+   `play_animation_list()` key playback off the `PSkin` pointer. New
+   `pe_vk_skin_instance()` (`pengine/src/engine/skeletal.h`/`model.c`) copies
+   a skin's joints and animation-clip shells per instance (remapped via each
+   `Node`'s own index, since a channel/parent pointer points into the
+   source's joints array) while sharing the read-only half — mesh, textures,
+   inverse bind matrices, keyframe sampler data. `creatures.c`'s
+   `CreatureInstance` now owns one of these instead of sharing its species'
+   template skin outright.
 3. **Scale channels are dropped.** `Node` (`pengine/src/engine/animation/node.h`)
    has no scale field, and `pe_load_animations()` explicitly skips
    `cgltf_animation_path_type_scale` channels (`model.c`). Some M2 bones may

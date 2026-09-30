@@ -6,6 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 `pwow` is a small program built on the author's own Vulkan engine, **pengine** (`/root/pengine`, a separate git repo). It flies a camera over real World of Warcraft **Classic 1.12** terrain, read from the user's own extracted game data. It is the consumer used to exercise pengine's `src/engine/terrain/` code; nearly all terrain logic lives in pengine, and `pwow.c` is only the application on top of it.
 
+A second, newer direction (`--live`) turns it into a real client of a local vmangos server instead of only a static terrain viewer - a walking character and real NPCs, not just flown-over ground. See `TODO.md`'s "Live client" section for what's done and what's missing, and the `project-pwow-live-client-goal`/`project-vmangos-server` memories for the server setup and the long-term direction.
+
 The repo is local only (no remote). Changes to the engine are committed and pushed in `/root/pengine`, not here.
 
 ## Build and run
@@ -109,6 +111,14 @@ The user's compositor is sway and their desktop holds other windows, so:
 - **Capture only that window** with `grim -g "<x>,<y> <w>x<h>"` using the geometry from `swaymsg -t get_tree`. A bare `grim` captures the whole desktop, including their browser and terminals.
 - Rendering glitches here have usually been in the engine, not this repo (a 0.001 camera near plane once tore cracks in the ground). To tell missing geometry from wrongly shaded pixels, temporarily change the clear colour to magenta.
 - The IDE's clangd reports missing headers and unknown types in `pwow.c` because it does not know the engine's include flags. Trust `make`, not those diagnostics.
+
+## Creatures (live client)
+
+`creatures.c`/`.h` render the "simple" (non-humanoid) creatures `pe_wowworld_poll()` tracks: a `CreatureDisplayInfo.dbc` row with `ExtendedDisplayInfoID == 0`, whose look is its own model+texture rather than the player-character race/gender/gear pipeline (`CreatureDisplayInfoExtra`). A humanoid creature is tracked the same way but silently never given an instance - see `TODO.md`.
+
+One `CreatureTemplate` per unique species (glb path, converted by `prepare_creatures.sh`) holds the shared, read-only half of a skinned model - mesh, textures, joint topology, animation clips - loaded once via pengine's `pe_vk_load_skin()`. Each tracked creature gets its own `CreatureInstance` with its own `PSkin`, built by pengine's `pe_vk_skin_instance()`: it copies out a skin's joints and animation-clip shells per instance (a channel/parent pointer is remapped via each joint's own index, since it points into the *source* skin's joints array) while sharing the mesh/texture/keyframe-data half. Without this, every instance of a species shared one `PSkin` outright and played one clip in lockstep, since pengine's `play_animation_by_name()`/`play_animation_list()` key playback off a `PSkin` pointer, not an instance.
+
+Each instance switches every frame between its species' idle/walk/run clip (resolved by name once per species in `find_or_load_template()`, falling back to whichever clip the species actually has) from `PWowCreature.moving`/`.walking` (`pengine/src/engine/wowauth/wowobject.h`). `walking` is the real `PRE_WOTLK_RUNMODE` bit off the last `SMSG_MONSTER_MOVE`'s own spline flags (WoWee's `spline_packet.hpp`: set means Run, clear means Walk on this pre-WotLK wire) - `pe_wowobject_handle_monster_move()` already parsed that flags word for the Catmull-Rom/cyclic bits, so reading this one too was free.
 
 ## Conventions
 
