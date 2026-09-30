@@ -8,3 +8,6 @@ resolve_creatures
 
 # textures converted from the game's own data, not ours to distribute
 data/
+
+compile_commands.json
+.cache

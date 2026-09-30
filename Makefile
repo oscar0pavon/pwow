@@ -2,9 +2,12 @@ WORKDIR := /root/pengine
 
 include $(WORKDIR)/include.make
 
-.PHONY: all clean
+.PHONY: all clean compile_commands
 
 all: pwow adt2wot wmo2wwb m22wwb m22gltf test_auth resolve_creatures
+
+compile_commands:
+	make --always-make --dry-run
 
 pwow: main.c camera.c input.c creatures.c $(WORKDIR)/lib/libpengine.a
 	$(CC) $(CFLAGS) $(GLOBAL_DEFINE) $(CINCLUDES) main.c camera.c input.c creatures.c \
