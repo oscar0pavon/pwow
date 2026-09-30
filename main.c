@@ -8,7 +8,6 @@
 #include <engine/renderer/pipeline.h>
 #include <engine/renderer/shaders.h>
 #include <engine/renderer/uniform_buffer.h>
-#include <engine/renderer/vk_images.h>
 #include <engine/renderer/vk_vertex.h>
 #include <engine/renderer/vulkan.h>
 #include <engine/skeletal.h>
@@ -17,97 +16,25 @@
 #include <engine/time.h>
 #include <engine/window_manager.h>
 #include <wowauth/wowauth.h>
-#include <wowauth/wowdbc.h>
 #include <wowauth/wowobject.h>
 #include <wowauth/wowworld.h>
 
-#include <ctype.h>
-#include <fcntl.h>
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
-#include <sys/stat.h>
-#include <sys/wait.h>
-#include <unistd.h>
 
 #include "camera.h"
 #include "creatures.h"
+#include "equipment.h"
 #include "input.h"
 
 #define PLAYER_MODEL_PATH "data/character/tauren/male/taurenmale.glb"
 #define PLAYER_ANIMATION "Stand"
 
-//CharSections.dbc, prepare_character.sh's copy of it. holds every race's
-//skin/face/hair textures; only the Tauren Male body skin (BaseSection 0) is
-//read here, since that is the only part the model has a texture slot for
-#define CHARSECTIONS_DBC_PATH "data/dbc/CharSections.dbc"
-#define CHARSECTIONS_SECTION_SKIN 0
-#define TAUREN_RACE_ID 6
-#define MALE_SEX_ID 0
-
 //stands in for the skin id SMSG_UPDATE_OBJECT would carry in PLAYER_BYTES:
 //live networking doesn't parse the player's own object update yet (see
 //TODO.md, "live client" item 1), so there is nothing to read this from
 #define PLAYER_SKIN_ID 0
-
-//CharSections.dbc's field layout is fixed across classic (confirmed against
-//dbc_layouts.json): 0 id, 1 race, 2 sex, 3 baseSection, 4 variationIndex,
-//5 colorIndex, 6 texture1, 7 texture2, 8 texture3, 9 flags
-#define CHARSECTIONS_FIELD_RACE 1
-#define CHARSECTIONS_FIELD_SEX 2
-#define CHARSECTIONS_FIELD_BASE_SECTION 3
-#define CHARSECTIONS_FIELD_COLOR_INDEX 5
-#define CHARSECTIONS_FIELD_TEXTURE1 6
-
-//m22gltf's normalise_texture_name, applied by hand to the one texture path
-//this needs: CharSections.dbc's own paths ("Character\Tauren\Male\...blp")
-//over into what prepare_character.sh actually wrote to data/
-//("character/tauren/male/...png")
-static void normalise_texture_path(char *name) {
-  for (char *c = name; *c; c++)
-    *c = *c == '\\' ? '/' : (char)tolower((unsigned char)*c);
-
-  size_t length = strlen(name);
-  if (length > 4 && strcmp(name + length - 4, ".blp") == 0)
-    strcpy(name + length - 4, ".png");
-}
-
-//scans CharSections.dbc for the Tauren Male skin row of the given colour and
-//writes its data/ path into out. falls back to skin 0 - already converted by
-//prepare_character.sh - if the DBC is missing or names no such row, since a
-//wrong skin tone beats no body texture at all
-static void resolve_player_skin_path(u8 skin_id, char *out, size_t out_size) {
-  const char *fallback = "data/character/tauren/male/taurenmaleskin00_00.png";
-  snprintf(out, out_size, "%s", fallback);
-
-  PWowDBC dbc;
-  if (!pe_wowdbc_load(CHARSECTIONS_DBC_PATH, &dbc))
-    return;
-
-  for (u32 r = 0; r < dbc.record_count; r++) {
-    if (pe_wowdbc_get_u32(&dbc, r, CHARSECTIONS_FIELD_RACE) != TAUREN_RACE_ID)
-      continue;
-    if (pe_wowdbc_get_u32(&dbc, r, CHARSECTIONS_FIELD_SEX) != MALE_SEX_ID)
-      continue;
-    if (pe_wowdbc_get_u32(&dbc, r, CHARSECTIONS_FIELD_BASE_SECTION) !=
-        CHARSECTIONS_SECTION_SKIN)
-      continue;
-    if (pe_wowdbc_get_u32(&dbc, r, CHARSECTIONS_FIELD_COLOR_INDEX) != skin_id)
-      continue;
-
-    char path[512];
-    snprintf(path, sizeof(path), "%s",
-             pe_wowdbc_get_string(&dbc, r, CHARSECTIONS_FIELD_TEXTURE1));
-    if (path[0] == '\0')
-      break;
-
-    normalise_texture_path(path);
-    snprintf(out, out_size, "data/%s", path);
-    break;
-  }
-
-  pe_wowdbc_free(&dbc);
-}
 
 #define HUD_FONT_PATH "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf"
 #define HUD_FONT_SIZE 20.0f
@@ -202,95 +129,6 @@ static PModel player_model;
 static PSkin player_skin;
 static PShader player_shader;
 
-//ItemDisplayInfo.dbc's field layout, classic (confirmed against WoWee's own
-//dbc_layouts.json for this expansion). the model/texture fields for a
-//weapon (LeftModel/RightModel and their textures, fields 1-4) aren't read
-//here yet - drawing a weapon needs attaching a second model at a bone, not
-//just a texture, and is out of scope for the first pass at equipment
-//(TODO.md's "Character rendering polish" item 4)
-#define ITEMDISPLAYINFO_DBC_PATH "data/dbc/ItemDisplayInfo.dbc"
-#define ITEMDISPLAYINFO_FIELD_ID 0
-#define ITEMDISPLAYINFO_FIELD_GEOSET_GROUP1 6
-#define ITEMDISPLAYINFO_FIELD_GEOSET_GROUP3 8
-#define ITEMDISPLAYINFO_FIELD_TEXTURE_ARM_UPPER 14
-#define ITEMDISPLAYINFO_FIELD_TEXTURE_ARM_LOWER 15
-#define ITEMDISPLAYINFO_FIELD_TEXTURE_HAND 16
-#define ITEMDISPLAYINFO_FIELD_TEXTURE_TORSO_UPPER 17
-#define ITEMDISPLAYINFO_FIELD_TEXTURE_TORSO_LOWER 18
-#define ITEMDISPLAYINFO_FIELD_TEXTURE_LEG_UPPER 19
-#define ITEMDISPLAYINFO_FIELD_TEXTURE_LEG_LOWER 20
-#define ITEMDISPLAYINFO_FIELD_TEXTURE_FOOT 21
-
-//the region textures ItemDisplayInfo names are painted onto specific UV
-//rectangles of the base body skin (WoWee's item_textures.hpp compositing),
-//not loaded as a whole separate texture the way the body skin or hair is -
-//resolved and kept per slot (below) so geoset selection can read
-//geoset_group1/3 without re-querying the DBC, but nothing is composited
-//onto the player's texture yet - only the geosets, via apply_player_
-//geosets(), draw anything different
-typedef struct PItemDisplayInfo {
-  u32 geoset_group1, geoset_group3;
-  char texture_torso_upper[64], texture_torso_lower[64];
-  char texture_leg_upper[64], texture_leg_lower[64];
-  char texture_arm_upper[64], texture_arm_lower[64];
-  char texture_hand[64], texture_foot[64];
-} PItemDisplayInfo;
-
-static void copy_dbc_texture_field(const PWowDBC *dbc, u32 record, u32 field,
-                                   char *out, size_t out_size) {
-  snprintf(out, out_size, "%s", pe_wowdbc_get_string(dbc, record, field));
-}
-
-//scans ItemDisplayInfo.dbc for display_info_id's row. false if the DBC is
-//missing or names no such row - 0 is a real display id here (a slot with
-//nothing equipped never gets this far, see sync_player_equipment())
-static bool resolve_item_display_info(u32 display_info_id,
-                                      PItemDisplayInfo *out) {
-  memset(out, 0, sizeof(*out));
-
-  PWowDBC dbc;
-  if (!pe_wowdbc_load(ITEMDISPLAYINFO_DBC_PATH, &dbc))
-    return false;
-
-  bool found = false;
-  for (u32 r = 0; r < dbc.record_count; r++) {
-    if (pe_wowdbc_get_u32(&dbc, r, ITEMDISPLAYINFO_FIELD_ID) != display_info_id)
-      continue;
-
-    out->geoset_group1 =
-        pe_wowdbc_get_u32(&dbc, r, ITEMDISPLAYINFO_FIELD_GEOSET_GROUP1);
-    out->geoset_group3 =
-        pe_wowdbc_get_u32(&dbc, r, ITEMDISPLAYINFO_FIELD_GEOSET_GROUP3);
-    copy_dbc_texture_field(&dbc, r, ITEMDISPLAYINFO_FIELD_TEXTURE_TORSO_UPPER,
-                           out->texture_torso_upper,
-                           sizeof(out->texture_torso_upper));
-    copy_dbc_texture_field(&dbc, r, ITEMDISPLAYINFO_FIELD_TEXTURE_TORSO_LOWER,
-                           out->texture_torso_lower,
-                           sizeof(out->texture_torso_lower));
-    copy_dbc_texture_field(&dbc, r, ITEMDISPLAYINFO_FIELD_TEXTURE_LEG_UPPER,
-                           out->texture_leg_upper,
-                           sizeof(out->texture_leg_upper));
-    copy_dbc_texture_field(&dbc, r, ITEMDISPLAYINFO_FIELD_TEXTURE_LEG_LOWER,
-                           out->texture_leg_lower,
-                           sizeof(out->texture_leg_lower));
-    copy_dbc_texture_field(&dbc, r, ITEMDISPLAYINFO_FIELD_TEXTURE_ARM_UPPER,
-                           out->texture_arm_upper,
-                           sizeof(out->texture_arm_upper));
-    copy_dbc_texture_field(&dbc, r, ITEMDISPLAYINFO_FIELD_TEXTURE_ARM_LOWER,
-                           out->texture_arm_lower,
-                           sizeof(out->texture_arm_lower));
-    copy_dbc_texture_field(&dbc, r, ITEMDISPLAYINFO_FIELD_TEXTURE_HAND,
-                           out->texture_hand, sizeof(out->texture_hand));
-    copy_dbc_texture_field(&dbc, r, ITEMDISPLAYINFO_FIELD_TEXTURE_FOOT,
-                           out->texture_foot, sizeof(out->texture_foot));
-    found = true;
-    break;
-  }
-
-  pe_wowdbc_free(&dbc);
-  return found;
-}
-
 //one PLAYER_VISIBLE_ITEM slot's own resolution state, driven by
 //sync_player_equipment(). resolved_entry tracks what item_entry was last
 //looked up for this slot so a CMSG_ITEM_QUERY_SINGLE round trip only
@@ -304,468 +142,6 @@ typedef struct PlayerEquipSlot {
 } PlayerEquipSlot;
 
 static PlayerEquipSlot player_equip_slots[PE_WOWOBJECT_PLAYER_EQUIP_SLOTS];
-
-#define COUNT_OF(array) (sizeof(array) / sizeof((array)[0]))
-
-//classic InventoryType (vmangos ItemPrototype.h) - which of the 19 equip
-//slots a resolved item's own PWowItemInfo.inventory_type names, independent
-//of which PLAYER_VISIBLE_ITEM index it happened to be read from
-#define INVTYPE_HEAD 1
-#define INVTYPE_BODY 4 //shirt
-#define INVTYPE_CHEST 5
-#define INVTYPE_WAIST 6
-#define INVTYPE_LEGS 7
-#define INVTYPE_FEET 8
-#define INVTYPE_WRISTS 9
-#define INVTYPE_HANDS 10
-#define INVTYPE_CLOAK 16
-#define INVTYPE_TABARD 19
-#define INVTYPE_ROBE 20
-
-//geoset_rules.hpp's own bare/base ids (WoWee) - a group's variant 1 (or the
-//named base one) means "none of this", the same convention taurenmale.glb's
-//own export carries
-#define GEOSET_BARE_FOREARMS 401  //group 4: no gloves
-#define GEOSET_BARE_SHINS 501     //group 5: no boots
-#define GEOSET_BARE_SLEEVES 801   //group 8: no chest/wrist sleeves
-#define GEOSET_BARE_PANTS 1301    //group 13: no leggings, and a robe's kilt
-                                 //replaces this same group
-#define GEOSET_NO_CAPE 1501       //group 15
-#define GEOSET_WITH_CAPE 1502
-#define GEOSET_DEFAULT_TABARD 1201 //group 12
-#define GEOSET_BELT_BASE 1801      //group 18
-
-//ItemDisplayInfo's GeosetGroup columns hold a small number G meaning "the
-//Gth variant after the bare one" (geoset_rules.hpp's equippedGeoset) - so a
-//chest with G=2 wants group 8 variant 3, the bare-sleeves id plus 2. G of
-//zero means the item does not touch that group
-static u32 equipped_geoset(u32 bare_id, u32 group_value) {
-  return bare_id + group_value;
-}
-
-//WoWee's pickGeoset: prefer the equipped variant if taurenmale.glb actually
-//carries it, else fall back (usually the bare id), else 0 - draw nothing
-//for this group. asking pe_model_set_active_geosets() for a variant the
-//model does not have would silently empty that group instead of falling
-//back, since it takes the given set exactly as given
-static u32 pick_geoset(u32 preferred, u32 fallback) {
-  if (preferred != 0 && pe_model_has_geoset(&player_model, preferred))
-    return preferred;
-  if (fallback != 0 && pe_model_has_geoset(&player_model, fallback))
-    return fallback;
-  return 0;
-}
-
-//the first equip slot (of the 19) whose resolved item has one of the given
-//inventory types, or -1. mirrors WoWee's findDisplayIdByInvType, but
-//returns the slot rather than a display id since this also wants that
-//slot's own geoset_group1/3
-static int find_slot_by_inv_type(const u32 *wanted, int wanted_count) {
-  for (int slot = 0; slot < PE_WOWOBJECT_PLAYER_EQUIP_SLOTS; slot++) {
-    PlayerEquipSlot *equip = &player_equip_slots[slot];
-    if (equip->resolved_entry == 0 || !equip->have_info)
-      continue;
-    for (int w = 0; w < wanted_count; w++)
-      if (equip->info.inventory_type == wanted[w])
-        return slot;
-  }
-  return -1;
-}
-
-//the model's own default geoset per group this might override, wiped and
-//replaced with whatever's actually equipped - WoWee's entity_spawner_
-//player.cpp is the reference this ports (helm/shoulder model attachment,
-//weapons and belt/tabard art are all out of scope here, same as TODO.md
-//says; only the geoset selection itself is ported)
-#define ACTIVE_GEOSETS_MAX 64
-
-static void apply_player_geosets() {
-  u32 active[ACTIVE_GEOSETS_MAX];
-  u32 active_count =
-      pe_model_default_geosets(&player_model, active, ACTIVE_GEOSETS_MAX);
-  if (active_count > ACTIVE_GEOSETS_MAX)
-    active_count = ACTIVE_GEOSETS_MAX;
-
-  LOG("pwow: default geosets=[");
-  for (u32 i = 0; i < active_count; i++)
-    LOG("%u ", active[i]);
-  LOG("]\n");
-
-  //erase the default member of every group equipment below might replace -
-  //WoWee's eraseGroup(), groups 4 gloves, 5 boots, 8 sleeves, 13 pants, 15
-  //cape, 18 belt
-  static const u32 erase_groups[] = {4, 5, 8, 13, 15, 18};
-  u32 kept = 0;
-  for (u32 i = 0; i < active_count; i++) {
-    bool erase = false;
-    for (u32 g = 0; g < COUNT_OF(erase_groups); g++)
-      if (active[i] / 100 == erase_groups[g])
-        erase = true;
-    if (!erase)
-      active[kept++] = active[i];
-  }
-  active_count = kept;
-
-  u32 geoset_gloves = pick_geoset(GEOSET_BARE_FOREARMS, GEOSET_BARE_FOREARMS);
-  u32 geoset_boots = pick_geoset(GEOSET_BARE_SHINS, GEOSET_BARE_SHINS);
-  u32 geoset_sleeves = pick_geoset(GEOSET_BARE_SLEEVES, GEOSET_BARE_SLEEVES);
-  u32 geoset_pants = pick_geoset(GEOSET_BARE_PANTS, GEOSET_BARE_PANTS);
-
-  //chest/shirt/robe -> sleeves (group 8); a robe's second geoset column
-  //also names its kilt over the legs (group 13) - WoWee's kRobeKiltBare
-  {
-    static const u32 wanted[] = {INVTYPE_BODY, INVTYPE_CHEST, INVTYPE_ROBE};
-    int slot = find_slot_by_inv_type(wanted, COUNT_OF(wanted));
-    if (slot >= 0 && player_equip_slots[slot].have_display) {
-      u32 gg1 = player_equip_slots[slot].display.geoset_group1;
-      if (gg1 > 0)
-        geoset_sleeves = pick_geoset(equipped_geoset(GEOSET_BARE_SLEEVES, gg1),
-                                     GEOSET_BARE_SLEEVES);
-      u32 gg3 = player_equip_slots[slot].display.geoset_group3;
-      if (gg3 > 0)
-        geoset_pants = pick_geoset(equipped_geoset(GEOSET_BARE_PANTS, gg3),
-                                   GEOSET_BARE_PANTS);
-    }
-  }
-  //legs -> pants (group 13)
-  {
-    static const u32 wanted[] = {INVTYPE_LEGS};
-    int slot = find_slot_by_inv_type(wanted, COUNT_OF(wanted));
-    if (slot >= 0 && player_equip_slots[slot].have_display) {
-      u32 gg1 = player_equip_slots[slot].display.geoset_group1;
-      if (gg1 > 0)
-        geoset_pants = pick_geoset(equipped_geoset(GEOSET_BARE_PANTS, gg1),
-                                   GEOSET_BARE_PANTS);
-    }
-  }
-  //feet -> shins (group 5)
-  {
-    static const u32 wanted[] = {INVTYPE_FEET};
-    int slot = find_slot_by_inv_type(wanted, COUNT_OF(wanted));
-    if (slot >= 0 && player_equip_slots[slot].have_display) {
-      u32 gg1 = player_equip_slots[slot].display.geoset_group1;
-      if (gg1 > 0)
-        geoset_boots = pick_geoset(equipped_geoset(GEOSET_BARE_SHINS, gg1),
-                                   GEOSET_BARE_SHINS);
-    }
-  }
-  //hands -> forearms (group 4)
-  {
-    static const u32 wanted[] = {INVTYPE_HANDS};
-    int slot = find_slot_by_inv_type(wanted, COUNT_OF(wanted));
-    if (slot >= 0 && player_equip_slots[slot].have_display) {
-      u32 gg1 = player_equip_slots[slot].display.geoset_group1;
-      if (gg1 > 0)
-        geoset_gloves = pick_geoset(equipped_geoset(GEOSET_BARE_FOREARMS, gg1),
-                                    GEOSET_BARE_FOREARMS);
-    }
-  }
-  //wrists -> sleeves (group 8), only if chest/shirt/robe didn't already set it
-  {
-    static const u32 wanted[] = {INVTYPE_WRISTS};
-    int slot = find_slot_by_inv_type(wanted, COUNT_OF(wanted));
-    if (slot >= 0 && player_equip_slots[slot].have_display &&
-        geoset_sleeves == GEOSET_BARE_SLEEVES) {
-      u32 gg1 = player_equip_slots[slot].display.geoset_group1;
-      if (gg1 > 0)
-        geoset_sleeves = pick_geoset(equipped_geoset(GEOSET_BARE_SLEEVES, gg1),
-                                     GEOSET_BARE_SLEEVES);
-    }
-  }
-  //waist -> belt (group 18); the base buckle variant even with nothing
-  //equipped, not nothing at all - the group was erased above
-  u32 geoset_belt;
-  {
-    static const u32 wanted[] = {INVTYPE_WAIST};
-    int slot = find_slot_by_inv_type(wanted, COUNT_OF(wanted));
-    u32 gg1 = (slot >= 0 && player_equip_slots[slot].have_display)
-                  ? player_equip_slots[slot].display.geoset_group1
-                  : 0;
-    geoset_belt = pick_geoset(
-        gg1 > 0 ? equipped_geoset(GEOSET_BELT_BASE, gg1) : 0, GEOSET_BELT_BASE);
-  }
-  //back/cloak (group 15)
-  u32 geoset_cape;
-  {
-    static const u32 wanted[] = {INVTYPE_CLOAK};
-    bool has_cloak = find_slot_by_inv_type(wanted, COUNT_OF(wanted)) >= 0;
-    geoset_cape =
-        pick_geoset(has_cloak ? GEOSET_WITH_CAPE : GEOSET_NO_CAPE,
-                   GEOSET_NO_CAPE);
-  }
-  //tabard - a fixed base variant only; no per-tabard art (emblem texture) yet
-  bool has_tabard;
-  {
-    static const u32 wanted[] = {INVTYPE_TABARD};
-    has_tabard = find_slot_by_inv_type(wanted, COUNT_OF(wanted)) >= 0;
-  }
-
-  u32 overrides[] = {geoset_gloves, geoset_boots,  geoset_sleeves,
-                    geoset_pants,  geoset_belt,   geoset_cape,
-                    has_tabard ? (u32)GEOSET_DEFAULT_TABARD : 0};
-  for (u32 i = 0; i < COUNT_OF(overrides); i++)
-    if (overrides[i] != 0 && active_count < ACTIVE_GEOSETS_MAX)
-      active[active_count++] = overrides[i];
-
-  LOG("pwow: geosets gloves=%u boots=%u sleeves=%u pants=%u belt=%u cape=%u "
-     "tabard=%d active=[",
-     geoset_gloves, geoset_boots, geoset_sleeves, geoset_pants, geoset_belt,
-     geoset_cape, has_tabard);
-  for (u32 i = 0; i < active_count; i++)
-    LOG("%u ", active[i]);
-  LOG("]\n");
-
-  pe_model_set_active_geosets(&player_model, active, active_count);
-}
-
-//---------------------------------------------------------------------------
-//equipment textures: compositing ItemDisplayInfo's six body-region overlays
-//onto the base skin (WoWee's compositeWithRegions() is the reference; see
-//PItemDisplayInfo's own doc comment for why these were only logged before)
-//---------------------------------------------------------------------------
-
-//creates path and every missing parent directory, tolerating "already
-//exists" - the only place pwow creates a directory at runtime; every other
-//data/ path is a prepare_*.sh script's job, done offline before pwow ever
-//runs, but an item's region art is only named once the live server sends
-//it, so there is no offline step that could have converted it ahead of time
-static void make_directories(const char *path) {
-  char buf[512];
-  snprintf(buf, sizeof(buf), "%s", path);
-  for (char *p = buf + 1; *p; p++) {
-    if (*p == '/') {
-      *p = '\0';
-      mkdir(buf, 0755);
-      *p = '/';
-    }
-  }
-  mkdir(buf, 0755);
-}
-
-static bool copy_file(const char *from, const char *to) {
-  FILE *in = fopen(from, "rb");
-  if (!in)
-    return false;
-  FILE *out = fopen(to, "wb");
-  if (!out) {
-    fclose(in);
-    return false;
-  }
-  char buf[65536];
-  size_t n;
-  while ((n = fread(buf, 1, sizeof(buf), in)) > 0)
-    fwrite(buf, 1, n, out);
-  fclose(in);
-  fclose(out);
-  return true;
-}
-
-//runs argv[0] with argv, no shell involved - argv[] is built from a fixed
-//tool path plus a texture name that ultimately comes off the wire
-//(ItemDisplayInfo.dbc, read by entry the local server names), so this
-//never goes through a shell to interpolate it into. blocks for the child;
-//true if it exited 0
-static bool run_tool(char *const argv[]) {
-  pid_t pid = fork();
-  if (pid < 0)
-    return false;
-  if (pid == 0) {
-    int devnull = open("/dev/null", O_WRONLY);
-    if (devnull >= 0) {
-      dup2(devnull, STDOUT_FILENO);
-      dup2(devnull, STDERR_FILENO);
-    }
-    execv(argv[0], argv);
-    _exit(127);
-  }
-  int status;
-  waitpid(pid, &status, 0);
-  return WIFEXITED(status) && WEXITSTATUS(status) == 0;
-}
-
-#define GAME_DATA_PATH_DEFAULT "/root/sources/WoWee/Data/expansions/classic"
-#define BLP_CONVERT_PATH_DEFAULT "/root/sources/WoWee/build/bin/blp_convert"
-
-//one of ItemDisplayInfo's 8 texture-region columns: the folder under
-//Item\TextureComponents (item_textures.hpp), lowercased and without the
-//backslashes - this repo's extracted game data tree is lowercase
-//throughout (WoWee's own MPQ extraction convention), unlike the DBC's own
-//spelling - and where its art lands on the 256x256 base skin atlas
-//(WoWee's compositeWithRegions(), its own 256-base coordinate table; the
-//Tauren male skin already is 256x256, so none of its upscaling applies here)
-typedef struct PItemRegion {
-  const char *folder;
-  int dst_x, dst_y, width, height;
-} PItemRegion;
-
-#define ITEM_REGION_COUNT 8
-static const PItemRegion ITEM_REGIONS[ITEM_REGION_COUNT] = {
-    {"armuppertexture", 0, 0, 128, 64},
-    {"armlowertexture", 0, 64, 128, 64},
-    {"handtexture", 0, 128, 128, 32},
-    {"torsouppertexture", 128, 0, 128, 64},
-    {"torsolowertexture", 128, 64, 128, 32},
-    {"leguppertexture", 128, 96, 128, 64},
-    {"leglowertexture", 128, 160, 128, 64},
-    {"foottexture", 128, 224, 128, 32},
-};
-
-//resolves one ItemDisplayInfo texture name to a data/ png path, converting
-//it from the game's own .blp the first time it's needed - tries the
-//gendered file first, then unisex, then the bare name (item_textures.hpp's
-//own resolution order), and only ever the male one, since taurenmale.glb
-//is the only race/gender pwow has converted. false if tex_name is empty or
-//none of the three spellings exist on disk
-static bool resolve_item_region_texture(const PItemRegion *region,
-                                        const char *tex_name, char *out,
-                                        size_t out_size) {
-  if (tex_name[0] == '\0')
-    return false;
-
-  char lower[128];
-  snprintf(lower, sizeof(lower), "%s", tex_name);
-  for (char *c = lower; *c; c++)
-    *c = (char)tolower((unsigned char)*c);
-
-  const char *game_data = getenv("GAME_DATA");
-  if (!game_data)
-    game_data = GAME_DATA_PATH_DEFAULT;
-  const char *blp_convert = getenv("BLP_CONVERT");
-  if (!blp_convert)
-    blp_convert = BLP_CONVERT_PATH_DEFAULT;
-
-  static const char *suffixes[] = {"_m", "_u", ""};
-  for (int s = 0; s < 3; s++) {
-    char source_blp[512];
-    snprintf(source_blp, sizeof(source_blp),
-            "%s/item/texturecomponents/%s/%s%s.blp", game_data,
-            region->folder, lower, suffixes[s]);
-    if (access(source_blp, F_OK) != 0)
-      continue;
-
-    char dest_dir[480];
-    snprintf(dest_dir, sizeof(dest_dir), "data/item/texturecomponents/%s",
-            region->folder);
-    char dest_base[512];
-    snprintf(dest_base, sizeof(dest_base), "%s/%s%s", dest_dir, lower,
-            suffixes[s]);
-    snprintf(out, out_size, "%s.png", dest_base);
-
-    if (access(out, F_OK) == 0)
-      return true; //converted already, by an earlier equip of the same item
-
-    make_directories(dest_dir);
-    char dest_blp[532];
-    snprintf(dest_blp, sizeof(dest_blp), "%s.blp", dest_base);
-    if (!copy_file(source_blp, dest_blp))
-      return false;
-
-    char *argv[] = {(char *)blp_convert, "--to-png", dest_blp, NULL};
-    bool ok = run_tool(argv);
-    remove(dest_blp);
-    return ok && access(out, F_OK) == 0;
-  }
-  return false;
-}
-
-//copies src's pixels into dst at (dst_x, dst_y), clamped to whichever of
-//src's or the given width/height is smaller - a size mismatch is silently
-//truncated rather than refused, since a wrong-sized region texture should
-//still draw something close rather than nothing (WoWee's own
-//compositeWithRegions() instead rescales; not needed here, since every
-//region texture this has seen so far matches its expected size exactly)
-static void blit_region(PImage *dst, PImage *src, int dst_x, int dst_y,
-                        int width, int height) {
-  int w = width < src->width ? width : src->width;
-  int h = height < src->heigth ? height : src->heigth;
-  if (dst_x + w > dst->width)
-    w = dst->width - dst_x;
-  if (dst_y + h > dst->heigth)
-    h = dst->heigth - dst_y;
-
-  for (int y = 0; y < h; y++) {
-    unsigned char *dst_row =
-        dst->pixels_data + ((size_t)(dst_y + y) * dst->width + dst_x) * 4;
-    unsigned char *src_row = src->pixels_data + (size_t)y * src->width * 4;
-    memcpy(dst_row, src_row, (size_t)w * 4);
-  }
-}
-
-//composites every region texture one resolved equip slot's own
-//ItemDisplayInfo names onto base, converting/loading each on demand
-static void composite_slot_regions(PImage *base,
-                                   const PItemDisplayInfo *display) {
-  struct {
-    const PItemRegion *region;
-    const char *name;
-  } regions[ITEM_REGION_COUNT] = {
-      {&ITEM_REGIONS[0], display->texture_arm_upper},
-      {&ITEM_REGIONS[1], display->texture_arm_lower},
-      {&ITEM_REGIONS[2], display->texture_hand},
-      {&ITEM_REGIONS[3], display->texture_torso_upper},
-      {&ITEM_REGIONS[4], display->texture_torso_lower},
-      {&ITEM_REGIONS[5], display->texture_leg_upper},
-      {&ITEM_REGIONS[6], display->texture_leg_lower},
-      {&ITEM_REGIONS[7], display->texture_foot},
-  };
-
-  for (int i = 0; i < ITEM_REGION_COUNT; i++) {
-    char png_path[512];
-    if (!resolve_item_region_texture(regions[i].region, regions[i].name,
-                                     png_path, sizeof(png_path)))
-      continue;
-
-    PImage region_image;
-    ZERO(region_image);
-    if (pe_load_image(png_path, &region_image) != 0)
-      continue;
-
-    blit_region(base, &region_image, regions[i].region->dst_x,
-               regions[i].region->dst_y, regions[i].region->width,
-               regions[i].region->height);
-    free_image(&region_image);
-  }
-}
-
-#define PLAYER_SKIN_SIZE 256
-
-//rebuilds the player's skin texture from the base body skin plus every
-//resolved equip slot's own region overlays, and swaps it into player_model
-//- destroy-and-recreate plus a descriptor rewrite, the same pattern
-//apply_player_geosets() already uses for the index buffer, and for the
-//same reason: this is a rare, player-driven event, not a per-frame one.
-//only ever composites against the stock 256x256 atlas; a base skin of any
-//other size is left alone, since the region coordinate table above has no
-//meaning for one
-static void apply_player_texture() {
-  char skin_path[512];
-  resolve_player_skin_path(PLAYER_SKIN_ID, skin_path, sizeof(skin_path));
-
-  PImage base;
-  ZERO(base);
-  if (pe_load_image(skin_path, &base) != 0)
-    return;
-  if (base.width != PLAYER_SKIN_SIZE || base.heigth != PLAYER_SKIN_SIZE) {
-    free_image(&base);
-    return;
-  }
-
-  for (int slot = 0; slot < PE_WOWOBJECT_PLAYER_EQUIP_SLOTS; slot++)
-    if (player_equip_slots[slot].have_display)
-      composite_slot_regions(&base, &player_equip_slots[slot].display);
-
-  PTexture new_texture;
-  ZERO(new_texture);
-  pe_vk_create_texture_from_image(&new_texture, &base);
-  new_texture.gpu_loaded = true;
-  free_image(&base);
-
-  vkDeviceWaitIdle(vk_device);
-  pe_vk_clean_image(&player_model.texture);
-  player_model.texture = new_texture;
-  pe_vk_descriptor_skinned_update(&player_model, &player_skin,
-                                  &main_render_target);
-}
 
 //call every live-mode frame, after pe_wowworld_poll(): for any equip slot
 //whose PLAYER_VISIBLE_ITEM entry has changed since last seen, resolves it
@@ -819,10 +195,26 @@ static void sync_player_equipment() {
        equip->display.texture_hand, equip->display.texture_foot);
   }
 
-  if (changed) {
-    apply_player_geosets();
-    apply_player_texture();
+  if (!changed)
+    return;
+
+  PEquippedItem items[PE_WOWOBJECT_PLAYER_EQUIP_SLOTS];
+  int item_count = 0;
+  for (int slot = 0; slot < PE_WOWOBJECT_PLAYER_EQUIP_SLOTS; slot++) {
+    PlayerEquipSlot *equip = &player_equip_slots[slot];
+    if (!equip->have_display)
+      continue;
+    items[item_count].inventory_type = equip->info.inventory_type;
+    items[item_count].display = equip->display;
+    item_count++;
   }
+
+  apply_equipment_geosets(&player_model, items, item_count);
+
+  char skin_path[512];
+  resolve_tauren_male_skin_path(PLAYER_SKIN_ID, skin_path, sizeof(skin_path));
+  apply_equipment_texture(&player_model, &player_skin, skin_path, items,
+                          item_count);
 }
 
 static const char *map = DEFAULT_MAP;
@@ -945,8 +337,8 @@ static void player_load() {
   player_model.shader = player_shader;
 
   char player_skin_path[512];
-  resolve_player_skin_path(PLAYER_SKIN_ID, player_skin_path,
-                           sizeof(player_skin_path));
+  resolve_tauren_male_skin_path(PLAYER_SKIN_ID, player_skin_path,
+                                sizeof(player_skin_path));
   pe_load_texture(player_skin_path, &player_model.texture);
 
   pe_vk_create_descriptor_sets(&player_model, pe_vk_descriptor_set_layout_skinned,
