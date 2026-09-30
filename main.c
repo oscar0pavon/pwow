@@ -780,10 +780,9 @@ static void pwow_update() {
   play_animation_list(delta_time);
 }
 
-static void pwow_input() {
-  if (key_released(&input.Q))
-    pe_terminate();
-}
+//Q used to quit here, but it is now WoWee's own dedicated strafe-left key
+//(input.c's pwow_input_read()), so it no longer doubles as an exit
+static void pwow_input() {}
 
 static void read_start_tile(char **arguments) {
   map = arguments[0];
