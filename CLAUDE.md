@@ -25,7 +25,7 @@ With no arguments it starts 40 yards over the Crossroads, in the Barrens (tile 3
 
 The world streams: tiles within `STREAM_DISTANCE` (900 yards) of the camera are loaded and the rest given back, so walk or fly as far as the converted `data/` reaches. Convert a wide block if you mean to travel: a tile that is not in `data/` is simply not there, and the edge of the block is the edge of the world.
 
-- `Makefile` has `WORKDIR := /root/pengine` hardcoded and includes pengine's `include.make`. The compile flags matter to a consumer, not just the engine: `-fcommon` and the `CGLM_FORCE_*` defines change struct layout and projection maths.
+- `Makefile` defaults `WORKDIR ?= ../pengine` (override with `make WORKDIR=/path/to/pengine` if it isn't a sibling checkout) and includes pengine's `include.make`. The compile flags matter to a consumer, not just the engine: `-fcommon` and the `CGLM_FORCE_*` defines change struct layout and projection maths.
 - pengine is a **static library**, and `make` here only compares `pwow.c` against `libpengine.a`'s timestamp. After any engine change, rebuild the engine and then `make -B` here, or a stale binary is what you run.
 - There are no tests and no lint target. "It builds" and "it renders correctly" are the only checks; see below for how to look at it.
 - `make` also builds `adt2wot`, `wmo2wwb` and `m22wwb`, the converters in `tools/`, which `prepare_tile.sh` calls.

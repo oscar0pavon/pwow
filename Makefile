@@ -1,4 +1,4 @@
-WORKDIR := /root/pengine
+WORKDIR ?= ../pengine
 
 include $(WORKDIR)/include.make
 

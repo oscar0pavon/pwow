@@ -11,14 +11,14 @@ ground. See `TODO.md` for what's done and what's missing.
 
 ## Dependencies
 - make, gcc
-- [pengine](https://github.com/oscar0pavon/pengine) (built and available at `/root/pengine`, or adjust `WORKDIR` in `Makefile`)
+- [pengine](https://github.com/oscar0pavon/pengine) (built and available as a sibling checkout `../pengine`, or pass `WORKDIR=/path/to/pengine` to `make`)
 - OpenSSL and zlib (for the vmangos client in `wowauth/`)
 - [WoWee](https://github.com/wowserhq/wowee) (`blp_convert`, for the data pipeline)
 - your own extracted Classic 1.12 game data
 
 ## Build
 ```
-make -C /root/pengine -j24     # the engine first
+make -C ../pengine -j24        # the engine first
 make                           # here: builds ./pwow and the tools/ converters
 ```
 
