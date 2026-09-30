@@ -139,6 +139,10 @@ static void resolve_player_skin_path(u8 skin_id, char *out, size_t out_size) {
 //(WoWee's CameraController) are 7 yards/s and 180 degrees/s; kept a little
 //slower to turn here since there is no mouse-look to correct an overshoot
 #define CHARACTER_MOVE_SPEED 7.0f
+//WoWee's WOW_BACK_SPEED: backing up is slower than a run, and paced to the
+//"Walkbackwards" clip played below - moving at CHARACTER_MOVE_SPEED while
+//backpedaling made the feet slide against the ground
+#define CHARACTER_BACK_SPEED 4.5f
 #define CHARACTER_TURN_SPEED_DEGREES 120.0f
 #define CHARACTER_CAMERA_DISTANCE 8.0f
 #define CHARACTER_CAMERA_PIVOT_HEIGHT 1.8f
@@ -716,18 +720,30 @@ static void update_live_character(float seconds) {
   if (in.strafe_left)
     glm_vec3_sub(direction, right, direction);
 
+  bool backward_only = in.backward && !in.forward;
+  float speed = backward_only ? CHARACTER_BACK_SPEED : CHARACTER_MOVE_SPEED;
+
   bool moving = glm_vec3_norm(direction) > 0.001f;
   if (moving) {
     glm_vec3_normalize(direction);
-    glm_vec3_muladds(direction, CHARACTER_MOVE_SPEED * seconds, player_position);
+    glm_vec3_muladds(direction, speed * seconds, player_position);
   }
 
   //CHARACTER_MOVE_SPEED (7 yd/s) is the game's own running speed, not its
-  //walk speed, so forward/strafe motion plays "Run"; there is no
+  //walk speed, so forward/diagonal motion plays "Run"; there is no
   //"Runbackwards" clip in taurenmale.glb, so backing up plays "Walkbackwards"
+  //at CHARACTER_BACK_SPEED instead. WoWee's CameraController only calls a
+  //strafe "anyStrafeLeft/Right" when it is the only input held - forward or
+  //backward wins the animation the same way here - and taurenmale.glb does
+  //carry "ShuffleLeft"/"ShuffleRight" for that pure-strafe case
+  bool strafe_only = moving && !in.forward && !in.backward;
   const char *locomotion_animation = "Stand";
-  if (moving)
-    locomotion_animation = (in.backward && !in.forward) ? "Walkbackwards" : "Run";
+  if (backward_only)
+    locomotion_animation = "Walkbackwards";
+  else if (strafe_only)
+    locomotion_animation = in.strafe_left ? "ShuffleLeft" : "ShuffleRight";
+  else if (moving)
+    locomotion_animation = "Run";
   play_animation_by_name(&player_skin, locomotion_animation, true);
 
   character_follow_ground();
