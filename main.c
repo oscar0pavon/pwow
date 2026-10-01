@@ -228,18 +228,19 @@ static bool walking;
 static float yaw = GLM_PI;
 static float pitch = -0.2f;
 
-//the cursor position at the start of the current right-button drag, and
+//the cursor position at the start of the current drag, and
 //whether one is in progress - reset on button-up so the next press starts
-//from wherever the cursor lands rather than jumping from the last drag's end
+//from wherever the cursor lands rather than jumping from the last drag's end.
+//either button drags the camera; only the right one also turns the character
 static float mouse_look_x;
 static float mouse_look_y;
 static bool mouse_look_active;
 
-//dx/dy in screen pixels since the last call, while the right button is held;
+//dx/dy in screen pixels since the last call, while either button is held;
 //false and untouched otherwise. shared by both camera modes, which is safe
 //since only one runs per frame
 static bool mouse_look_delta(float *dx, float *dy) {
-  if (!mouse.right.pressed) {
+  if (!mouse.left.pressed && !mouse.right.pressed) {
     mouse_look_active = false;
     return false;
   }
@@ -718,12 +719,16 @@ static void update_live_character(float seconds) {
   } else {
     //facing = (cos f, sin f, 0), so increasing it swings the nose toward
     //+right (right = cross(Z, forward)) - a turn to the character's own
-    //right, not its left. turn_right adds, turn_left subtracts, to match
+    //right, not its left. turn_right adds, turn_left subtracts, to match.
+    //the camera takes the same turn rather than snapping to the facing, so
+    //a left-button orbit survives it
+    float turn = 0;
     if (in.turn_left)
-      player_facing -= CHARACTER_TURN_SPEED_DEGREES * seconds;
+      turn -= CHARACTER_TURN_SPEED_DEGREES * seconds;
     if (in.turn_right)
-      player_facing += CHARACTER_TURN_SPEED_DEGREES * seconds;
-    player_camera.yaw = player_facing;
+      turn += CHARACTER_TURN_SPEED_DEGREES * seconds;
+    player_facing += turn;
+    player_camera.yaw += turn;
   }
 
   float facing_rad = glm_rad(player_facing);
