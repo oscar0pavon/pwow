@@ -20,14 +20,20 @@
 
 #define CHARSECTIONS_DBC_PATH "data/dbc/CharSections.dbc"
 #define CHARSECTIONS_SECTION_SKIN 0
+#define CHARSECTIONS_SECTION_FACE 1
+#define CHARSECTIONS_SECTION_HAIR 3
+#define CHARSECTIONS_SECTION_UNDERWEAR 4
 #define TAUREN_RACE_ID 6
 #define MALE_SEX_ID 0
 
 #define CHARSECTIONS_FIELD_RACE 1
 #define CHARSECTIONS_FIELD_SEX 2
 #define CHARSECTIONS_FIELD_BASE_SECTION 3
+#define CHARSECTIONS_FIELD_VARIATION_INDEX 4
 #define CHARSECTIONS_FIELD_COLOR_INDEX 5
 #define CHARSECTIONS_FIELD_TEXTURE1 6
+#define CHARSECTIONS_FIELD_TEXTURE2 7
+#define CHARSECTIONS_FIELD_TEXTURE3 8
 
 //m22gltf's normalise_texture_name, applied by hand to the one texture path
 //this needs: CharSections.dbc's own paths ("Character\Tauren\Male\...blp")
@@ -70,6 +76,61 @@ void resolve_tauren_male_skin_path(u8 skin_id, char *out, size_t out_size) {
     normalise_texture_path(path);
     snprintf(out, out_size, "data/%s", path);
     break;
+  }
+
+  pe_wowdbc_free(&dbc);
+}
+
+static void body_layer_path(const PWowDBC *dbc, u32 record, u32 field,
+                            char *out, size_t out_size) {
+  out[0] = '\0';
+  char path[512];
+  snprintf(path, sizeof(path), "%s", pe_wowdbc_get_string(dbc, record, field));
+  if (path[0] == '\0')
+    return;
+
+  normalise_texture_path(path);
+  snprintf(out, out_size, "data/%s", path);
+}
+
+void resolve_tauren_male_body(const PAppearance *look, PBodyLayers *out) {
+  memset(out, 0, sizeof(*out));
+  resolve_tauren_male_skin_path(look->skin, out->skin, sizeof(out->skin));
+
+  PWowDBC dbc;
+  if (!pe_wowdbc_load(CHARSECTIONS_DBC_PATH, &dbc))
+    return;
+
+  bool found_face = false, found_hair = false, found_underwear = false;
+  for (u32 r = 0; r < dbc.record_count; r++) {
+    if (pe_wowdbc_get_u32(&dbc, r, CHARSECTIONS_FIELD_RACE) != TAUREN_RACE_ID ||
+        pe_wowdbc_get_u32(&dbc, r, CHARSECTIONS_FIELD_SEX) != MALE_SEX_ID)
+      continue;
+
+    u32 section = pe_wowdbc_get_u32(&dbc, r, CHARSECTIONS_FIELD_BASE_SECTION);
+    u32 variation = pe_wowdbc_get_u32(&dbc, r, CHARSECTIONS_FIELD_VARIATION_INDEX);
+    u32 color = pe_wowdbc_get_u32(&dbc, r, CHARSECTIONS_FIELD_COLOR_INDEX);
+
+    if (section == CHARSECTIONS_SECTION_FACE && !found_face &&
+        variation == look->face && color == look->skin) {
+      body_layer_path(&dbc, r, CHARSECTIONS_FIELD_TEXTURE1, out->face_lower,
+                      sizeof(out->face_lower));
+      body_layer_path(&dbc, r, CHARSECTIONS_FIELD_TEXTURE2, out->face_upper,
+                      sizeof(out->face_upper));
+      found_face = true;
+    } else if (section == CHARSECTIONS_SECTION_HAIR && !found_hair &&
+               variation == look->hair_style && color == look->hair_color) {
+      body_layer_path(&dbc, r, CHARSECTIONS_FIELD_TEXTURE2, out->scalp_lower,
+                      sizeof(out->scalp_lower));
+      body_layer_path(&dbc, r, CHARSECTIONS_FIELD_TEXTURE3, out->scalp_upper,
+                      sizeof(out->scalp_upper));
+      found_hair = true;
+    } else if (section == CHARSECTIONS_SECTION_UNDERWEAR && !found_underwear &&
+               color == look->skin) {
+      body_layer_path(&dbc, r, CHARSECTIONS_FIELD_TEXTURE1, out->pelvis,
+                      sizeof(out->pelvis));
+      found_underwear = true;
+    }
   }
 
   pe_wowdbc_free(&dbc);
@@ -569,18 +630,60 @@ static void composite_item_regions(PImage *base, const PItemDisplayInfo *display
 
 #define EQUIPMENT_SKIN_SIZE 256
 
+//where each body layer lands on the 256x256 atlas (the same table as the
+//item regions above): the face and the scalp share the two face rectangles
+static const struct {
+  int dst_x, dst_y, width, height;
+} FACE_UPPER_REGION = {0, 160, 128, 32}, FACE_LOWER_REGION = {0, 192, 128, 64},
+  PELVIS_REGION = {128, 96, 128, 64};
+
+static void composite_body_layer(PImage *base, const char *path, int dst_x,
+                                 int dst_y, int width, int height) {
+  if (path[0] == '\0')
+    return;
+
+  PImage layer;
+  ZERO(layer);
+  if (pe_load_image(path, &layer) != 0)
+    return;
+
+  blit_region(base, &layer, dst_x, dst_y, width, height);
+  free_image(&layer);
+}
+
+//the real client's order: the face, the scalp's hair over it, then the
+//underwear, and the items last over all of it
+static void composite_body(PImage *base, const PBodyLayers *body) {
+  composite_body_layer(base, body->face_lower, FACE_LOWER_REGION.dst_x,
+                       FACE_LOWER_REGION.dst_y, FACE_LOWER_REGION.width,
+                       FACE_LOWER_REGION.height);
+  composite_body_layer(base, body->face_upper, FACE_UPPER_REGION.dst_x,
+                       FACE_UPPER_REGION.dst_y, FACE_UPPER_REGION.width,
+                       FACE_UPPER_REGION.height);
+  composite_body_layer(base, body->scalp_lower, FACE_LOWER_REGION.dst_x,
+                       FACE_LOWER_REGION.dst_y, FACE_LOWER_REGION.width,
+                       FACE_LOWER_REGION.height);
+  composite_body_layer(base, body->scalp_upper, FACE_UPPER_REGION.dst_x,
+                       FACE_UPPER_REGION.dst_y, FACE_UPPER_REGION.width,
+                       FACE_UPPER_REGION.height);
+  composite_body_layer(base, body->pelvis, PELVIS_REGION.dst_x,
+                       PELVIS_REGION.dst_y, PELVIS_REGION.width,
+                       PELVIS_REGION.height);
+}
+
 void apply_equipment_texture(PModel *model, PSkin *skin,
-                             const char *base_skin_path,
+                             const PBodyLayers *body,
                              const PEquippedItem *items, int count) {
   PImage base;
   ZERO(base);
-  if (pe_load_image(base_skin_path, &base) != 0)
+  if (pe_load_image(body->skin, &base) != 0)
     return;
   if (base.width != EQUIPMENT_SKIN_SIZE || base.heigth != EQUIPMENT_SKIN_SIZE) {
     free_image(&base);
     return;
   }
 
+  composite_body(&base, body);
   for (int i = 0; i < count; i++)
     composite_item_regions(&base, &items[i].display);
 

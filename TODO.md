@@ -189,20 +189,19 @@ in `m22gltf.c`). Remaining gaps, in the order they'll probably bite:
 2. Only the Tauren male model exists (`data/character/tauren/male/`). Other
    races/genders would each need their own `m22gltf` conversion, and their own
    `prepare_character.sh`-style skin-texture conversion.
-3. **`CharSections.dbc` body-skin resolution is done; face, hair and the other
-   races/sexes are not.** `wowauth/wowdbc.c` is a minimal WDBC
-   reader (record/field access only, no CSV/JSON fallback - pwow only ever
-   reads real DBCs); `main.c`'s `resolve_player_skin_path()` scans
-   `data/dbc/CharSections.dbc` (copied by `prepare_character.sh`, which also
-   converts all 19 Tauren Male skin tones) for the Tauren Male skin row
-   (`BaseSection` 0) matching `PLAYER_SKIN_ID`, and `player_load()` loads
-   whichever PNG that resolves to instead of a hardcoded path. `PLAYER_SKIN_ID`
-   is itself still a `#define` stand-in for the skin id `PLAYER_BYTES` would
-   carry (see live-client item 1: nothing parses the player's own object
-   update yet, so there is nothing to unpack `PLAYER_BYTES` from). Left for
-   later, following WoWee's `char_sections.cpp` as the reference: face and hair
-   texture rows (`BaseSection` 1 and 3), and the same resolution for every
-   other race/sex once their models and skin textures are converted.
+3. **Done: `CharSections.dbc` resolves the Tauren Male body skin, face, scalp and
+   underwear; the other races and sexes are not.** `equipment.c`'s
+   `resolve_tauren_male_body()` scans `data/dbc/CharSections.dbc` for the rows of
+   a `PAppearance` (skin, face, hair style, hair colour) and
+   `apply_equipment_texture()` composites them onto the 256x256 skin atlas in the
+   client's order: face lower and upper, the scalp over them, the underwear, then
+   the items. `prepare_character.sh` converts every face, scalp and underwear
+   texture the game ships (the game has no `ScalpUpperHair` files, so the upper
+   scalp is skipped). `PLAYER_APPEARANCE` in `main.c` is a stand-in for what
+   `PLAYER_BYTES` would carry (see live-client item 1), all zero like the test
+   character. Not done: the model's texture type 8 (skin extra), which the facial
+   hair geosets (1xx, 2xx) draw from - `PModel` has one texture, so they use the
+   skin atlas - and the other race and sex models.
 4. **No equipment rendering at all — a live character stands in whatever the
    base model+geoset defaults draw, never what is actually in its equipped
    slots.** Checked against a real WoW.exe screenshot of a Tauren Warrior:

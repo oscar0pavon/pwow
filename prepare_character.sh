@@ -37,4 +37,33 @@ for id in $(seq 0 18); do
   rm "$out/$blp"
 done
 
+convert() {
+  png=$1
+  blp="${png%.png}.blp"
+
+  if [ -f "$out/$png" ] || [ ! -f "$GAME_DATA/$blp" ]; then
+    return
+  fi
+  mkdir -p "$out/$(dirname "$png")"
+  cp "$GAME_DATA/$blp" "$out/$blp"
+  "$BLP_CONVERT" --to-png "$out/$blp" > /dev/null
+  rm "$out/$blp"
+}
+
+# the layers composited onto a body skin: the faces (5 shapes in every skin
+# tone), the scalp of each hair colour and the underwear of each skin tone.
+# a layer the game does not ship is skipped, the way the client does without it
+for id in $(seq 0 18); do
+  for face in $(seq 0 4); do
+    convert "$(printf "character/tauren/male/taurenmalefacelower%02d_%02d.png" "$face" "$id")"
+    convert "$(printf "character/tauren/male/taurenmalefaceupper%02d_%02d.png" "$face" "$id")"
+  done
+  convert "$(printf "character/tauren/male/taurenmalenakedpelvisskin00_%02d.png" "$id")"
+done
+
+for color in 0 1 2; do
+  convert "$(printf "character/tauren/scalplowerhair00_%02d.png" "$color")"
+  convert "$(printf "character/tauren/scalpupperhair00_%02d.png" "$color")"
+done
+
 echo "prepared character data"

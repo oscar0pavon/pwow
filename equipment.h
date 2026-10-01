@@ -20,6 +20,25 @@
 //such row, since a wrong skin tone beats no body texture at all
 void resolve_tauren_male_skin_path(u8 skin_id, char *out, size_t out_size);
 
+//which of CharSections.dbc's rows a character is built from: the skin colour,
+//the face, and the hair style and colour (a Tauren's horns)
+typedef struct PAppearance {
+  u8 skin, face, hair_style, hair_color;
+} PAppearance;
+
+//the data/ pngs a body is composited from, an empty string for a layer the
+//character does not have: the skin is the whole atlas, the rest land on it
+typedef struct PBodyLayers {
+  char skin[512];
+  char face_lower[512], face_upper[512];
+  char scalp_lower[512], scalp_upper[512];
+  char pelvis[512];
+} PBodyLayers;
+
+//scans CharSections.dbc for the Tauren Male rows of look: the skin, the
+//face, the scalp of the hair style and the underwear
+void resolve_tauren_male_body(const PAppearance *look, PBodyLayers *out);
+
 //ItemDisplayInfo.dbc's geoset groups and the six body-region texture names
 //an equipped item carries - resolved once per display id and cached by
 //the caller (PlayerEquipSlot in main.c, HumanoidEquipSlot in creatures.c),
@@ -60,7 +79,7 @@ typedef struct PEquippedItem {
 void apply_equipment_geosets(PModel *model, const PEquippedItem *items,
                              int count);
 
-//composites base_skin_path plus every item's own region textures (their
+//composites body's layers plus every item's own region textures (their
 //.blp converted to a data/ png at runtime, the first time a given one is
 //needed - see resolve_item_region_texture() in equipment.c) onto one
 //256x256 texture and swaps it into model, rewriting skin's descriptor set
@@ -68,7 +87,7 @@ void apply_equipment_geosets(PModel *model, const PEquippedItem *items,
 //apply_equipment_geosets() above, for the same reason (destroy-and-
 //recreate of model->texture, not an in-place update)
 void apply_equipment_texture(PModel *model, PSkin *skin,
-                             const char *base_skin_path,
+                             const PBodyLayers *body,
                              const PEquippedItem *items, int count);
 
 #endif

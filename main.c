@@ -31,10 +31,12 @@
 #define PLAYER_MODEL_PATH "data/character/tauren/male/taurenmale.glb"
 #define PLAYER_ANIMATION "Stand"
 
-//stands in for the skin id SMSG_UPDATE_OBJECT would carry in PLAYER_BYTES:
-//live networking doesn't parse the player's own object update yet (see
-//TODO.md, "live client" item 1), so there is nothing to read this from
+//stands in for the skin, face, hair style and hair colour SMSG_UPDATE_OBJECT
+//would carry in PLAYER_BYTES: live networking doesn't parse the player's own
+//object update yet (see TODO.md, "live client" item 1), so there is nothing
+//to read this from. all zero is what the test character was created with
 #define PLAYER_SKIN_ID 0
+static const PAppearance PLAYER_APPEARANCE = {.skin = PLAYER_SKIN_ID};
 
 #define HUD_FONT_PATH "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf"
 #define HUD_FONT_SIZE 20.0f
@@ -211,9 +213,9 @@ static void sync_player_equipment() {
 
   apply_equipment_geosets(&player_model, items, item_count);
 
-  char skin_path[512];
-  resolve_tauren_male_skin_path(PLAYER_SKIN_ID, skin_path, sizeof(skin_path));
-  apply_equipment_texture(&player_model, &player_skin, skin_path, items,
+  PBodyLayers body;
+  resolve_tauren_male_body(&PLAYER_APPEARANCE, &body);
+  apply_equipment_texture(&player_model, &player_skin, &body, items,
                           item_count);
 }
 
