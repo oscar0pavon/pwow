@@ -26,6 +26,11 @@ void pwow_camera_init(PwowOrbitCamera *camera, float yaw, float pitch,
 void pwow_camera_turn(PwowOrbitCamera *camera, float yaw_delta,
                       float pitch_delta);
 
+//moves the distance the camera settles at by wheel notches (positive zooms
+//in), the way WoWee's CameraController::processMouseWheel does: a step of 15%
+//of the current distance, at least 0.3 yards, so it stays fine up close
+void pwow_camera_zoom(PwowOrbitCamera *camera, int notches);
+
 //orbits around target_position (the character's feet) and writes the result
 //into main_camera, including the final camera_update() call
 void pwow_camera_update(PwowOrbitCamera *camera, PCamera *main_camera,

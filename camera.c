@@ -9,6 +9,11 @@
 
 #define PITCH_LIMIT_DEGREES 85.0f
 
+#define ZOOM_STEP_FRACTION 0.15f
+#define ZOOM_STEP_MINIMUM 0.3f
+#define MIN_DISTANCE 0.5f
+#define MAX_DISTANCE 22.0f
+
 void pwow_camera_init(PwowOrbitCamera *camera, float yaw, float pitch,
                       float distance, float pivot_height) {
   camera->yaw = yaw;
@@ -23,6 +28,13 @@ void pwow_camera_turn(PwowOrbitCamera *camera, float yaw_delta,
   camera->yaw += yaw_delta;
   camera->pitch += pitch_delta;
   camera->pitch = glm_clamp(camera->pitch, -PITCH_LIMIT_DEGREES, PITCH_LIMIT_DEGREES);
+}
+
+void pwow_camera_zoom(PwowOrbitCamera *camera, int notches) {
+  float step = fmaxf(camera->target_distance * ZOOM_STEP_FRACTION, ZOOM_STEP_MINIMUM);
+  camera->target_distance -= notches * step;
+  camera->target_distance =
+      glm_clamp(camera->target_distance, MIN_DISTANCE, MAX_DISTANCE);
 }
 
 void pwow_camera_update(PwowOrbitCamera *camera, PCamera *main_camera,

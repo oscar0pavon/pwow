@@ -708,6 +708,9 @@ static void update_live_character(float seconds) {
     pwow_camera_turn(&player_camera, dx * MOUSE_LOOK_SENSITIVITY_DEGREES,
                      -dy * MOUSE_LOOK_SENSITIVITY_DEGREES);
 
+  pwow_camera_zoom(&player_camera, mouse.wheel);
+  mouse.wheel = 0;
+
   //WoWee's CameraController::update() calls this cameraDrivesFacing: held,
   //the right mouse button turns the character to face wherever the camera
   //looks, so walking forward goes where the view points, the way it does in
