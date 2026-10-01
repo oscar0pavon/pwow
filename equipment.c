@@ -501,12 +501,14 @@ static bool resolve_item_region_texture(const PItemRegion *region,
   return false;
 }
 
-//copies src's pixels into dst at (dst_x, dst_y), clamped to whichever of
+//lays src's pixels over dst at (dst_x, dst_y), clamped to whichever of
 //src's or the given width/height is smaller - a size mismatch is silently
 //truncated rather than refused, since a wrong-sized region texture should
 //still draw something close rather than nothing (WoWee's own
 //compositeWithRegions() instead rescales; not needed here, since every
-//region texture this has seen so far matches its expected size exactly)
+//region texture this has seen so far matches its expected size exactly).
+//src's alpha decides how much of dst shows through: a shirt or harness is
+//straps on bare skin, and copying it would paint its empty areas over the fur
 static void blit_region(PImage *dst, PImage *src, int dst_x, int dst_y,
                         int width, int height) {
   int w = width < src->width ? width : src->width;
@@ -520,7 +522,13 @@ static void blit_region(PImage *dst, PImage *src, int dst_x, int dst_y,
     unsigned char *dst_row =
         dst->pixels_data + ((size_t)(dst_y + y) * dst->width + dst_x) * 4;
     unsigned char *src_row = src->pixels_data + (size_t)y * src->width * 4;
-    memcpy(dst_row, src_row, (size_t)w * 4);
+    for (int x = 0; x < w; x++) {
+      unsigned char *to = dst_row + x * 4;
+      unsigned char *from = src_row + x * 4;
+      int alpha = from[3];
+      for (int c = 0; c < 3; c++)
+        to[c] = (from[c] * alpha + to[c] * (255 - alpha)) / 255;
+    }
   }
 }
 
