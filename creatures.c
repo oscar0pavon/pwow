@@ -29,6 +29,7 @@
 #define CREATURE_DISPLAY_FIELD_ID 0
 #define CREATURE_DISPLAY_FIELD_MODEL_ID 1
 #define CREATURE_DISPLAY_FIELD_EXTENDED 3
+#define CREATURE_DISPLAY_FIELD_SCALE 4
 #define CREATURE_DISPLAY_FIELD_TEXTURE0 6
 
 #define CREATURE_EXTRA_DBC_PATH "data/dbc/CreatureDisplayInfoExtra.dbc"
@@ -96,6 +97,12 @@ static const struct {
 
 typedef struct ResolvedDisplay {
   u32 display_id;
+  //the size the display asks for, which a creature is drawn at times the scale
+  //its object carries. CreatureModelData's own scale is not in it: this
+  //server's object scale for a tauren female is 1.25, the model's 1.25 as
+  //well, so applying both drew her at 1.56 and the males, whose model scale is
+  //1, were right on the object's alone
+  float scale;
   bool simple;
   bool humanoid;
   PAppearance look;
@@ -166,6 +173,14 @@ static void resolve_humanoid(ResolvedDisplay *out, u32 extra_id) {
   pe_wowdbc_free(&extra_dbc);
 }
 
+//a scale column of a DBC row as the float it is, 1 where the row has none
+static float scale_field(const PWowDBC *dbc, u32 record, u32 field) {
+  u32 bits = pe_wowdbc_get_u32(dbc, record, field);
+  float scale;
+  memcpy(&scale, &bits, sizeof(scale));
+  return scale > 0.0f ? scale : 1.0f;
+}
+
 static ResolvedDisplay *resolve_display(u32 display_id) {
   for (int i = 0; i < resolved_display_count; i++)
     if (resolved_displays[i].display_id == display_id)
@@ -177,6 +192,7 @@ static ResolvedDisplay *resolve_display(u32 display_id) {
   ResolvedDisplay *out = &resolved_displays[resolved_display_count++];
   ZERO(*out);
   out->display_id = display_id;
+  out->scale = 1.0f;
 
   PWowDBC display_dbc, model_dbc;
   if (!pe_wowdbc_load(CREATURE_DISPLAY_DBC_PATH, &display_dbc))
@@ -189,12 +205,6 @@ static ResolvedDisplay *resolve_display(u32 display_id) {
   for (u32 r = 0; r < display_dbc.record_count; r++) {
     if (pe_wowdbc_get_u32(&display_dbc, r, CREATURE_DISPLAY_FIELD_ID) != display_id)
       continue;
-    u32 extra_id = pe_wowdbc_get_u32(&display_dbc, r, CREATURE_DISPLAY_FIELD_EXTENDED);
-    if (extra_id != 0) {
-      resolve_humanoid(out, extra_id);
-      break;
-    }
-
     u32 model_id =
         pe_wowdbc_get_u32(&display_dbc, r, CREATURE_DISPLAY_FIELD_MODEL_ID);
     u32 model_record = model_dbc.record_count;
@@ -206,6 +216,14 @@ static ResolvedDisplay *resolve_display(u32 display_id) {
     }
     if (model_record == model_dbc.record_count)
       break;
+
+    out->scale = scale_field(&display_dbc, r, CREATURE_DISPLAY_FIELD_SCALE);
+
+    u32 extra_id = pe_wowdbc_get_u32(&display_dbc, r, CREATURE_DISPLAY_FIELD_EXTENDED);
+    if (extra_id != 0) {
+      resolve_humanoid(out, extra_id);
+      break;
+    }
 
     char model_path[256];
     snprintf(model_path, sizeof(model_path), "%s",
@@ -710,7 +728,8 @@ void creatures_sync(const PWowObjectState *npc_state) {
     //feet position isn't mistaken for the model root and the creature does
     //not float or sink - see compute_foot_offset() above
     PModel *instance = &creature_instances[slot].model;
-    float render_z = creature->z + creature_instances[slot].foot_offset;
+    float scale = resolved->scale * creature->scale;
+    float render_z = creature->z + creature_instances[slot].foot_offset * scale;
     glm_mat4_identity(instance->model_mat);
     glm_translate(instance->model_mat, (vec3){creature->x, creature->y, render_z});
     glm_rotate(instance->model_mat, -creature->o, (vec3){0, 0, 1});
@@ -722,6 +741,7 @@ void creatures_sync(const PWowObjectState *npc_state) {
     //of the body, a shield on the left arm, follows it. nothing here culls
     //faces, so the reflection's turned winding does no harm
     glm_scale(instance->model_mat, (vec3){1, 1, -1});
+    glm_scale_uni(instance->model_mat, scale);
     glm_vec3_copy((vec3){creature->x, creature->y, render_z}, instance->position);
   }
 
@@ -747,4 +767,9 @@ void creatures_draw(VkCommandBuffer *command, uint32_t image_index,
       attached_item_draw(&inst->attached[i], &inst->skin, inst->model.model_mat,
                          command, image_index, view, projection);
   }
+}
+
+float creatures_display_scale(u32 display_id) {
+  ResolvedDisplay *resolved = resolve_display(display_id);
+  return resolved ? resolved->scale : 1.0f;
 }

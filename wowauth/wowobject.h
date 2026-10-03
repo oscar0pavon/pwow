@@ -33,6 +33,7 @@ typedef struct PWowCreature {
   u32 entry;
   u32 display_id;
   PWowVirtualItems held;
+  float scale; //OBJECT_FIELD_SCALE_X, the size the server sets for this unit, 1 by default
   float x, y, z, o; //what creatures_sync() actually reads - the interpolated
                     //display position/facing, kept current every frame by
                     //pe_wowobject_state_tick() while moving below is set

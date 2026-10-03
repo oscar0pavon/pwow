@@ -14,6 +14,10 @@
 //textures must already be converted by prepare_creatures.sh and
 //prepare_character.sh; one that is not is silently skipped
 
+//the size CreatureDisplayInfo.dbc asks for a display to be drawn at, 1 for one
+//it does not know
+float creatures_display_scale(u32 display_id);
+
 //creates the shared skinned shader every creature model draws with. call
 //once, after pe_vk_init (same requirement pe_text_init has)
 void creatures_init(void);
