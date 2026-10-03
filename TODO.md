@@ -121,11 +121,30 @@ inventory side is `wowauth/wowinventory.c`.
 
 Not done, roughly in the order they would be wanted:
 
-1. **Targeting**: **partly done**. A left click selects a creature, sends
-   `CMSG_SET_SELECTION` and shows the target frame; right click talks to NPCs
-   (gossip, quests; see CLAUDE.md). Missing: Tab targeting, Attack and spells
-   using the target (`use_action_slot` still casts at nobody), the portrait, a
-   quest log.
+1. **Targeting, talking and quests**: **partly done** (CLAUDE.md has how).
+   Done: a left click picks a creature and shows the target frame (name,
+   level, health, power), with a green ring under it (pengine's `decal.c`)
+   and its name over its head; a right click on a gossip or quest NPC opens
+   the window (gossip, quest list, details, progress, reward) with the
+   game's parchment, wrapped and scrollable text, reward item tooltips and
+   `!`/`?` signs over quest givers; the walk is reported to the server with
+   `MSG_MOVE_*`. Missing, roughly in order:
+   - the **quest log** and objective tracking (kills, items; the player's
+     quest fields and `SMSG_QUESTUPDATE_*`), and the XP gained shown on turn-in;
+   - what gossip options open: vendor, trainer, taxi, innkeeper, bank, battle
+     master windows (the server's answers are ignored, and a coded option only
+     shows a notice);
+   - Tab targeting, and Attack and spells using the target
+     (`use_action_slot` still casts at nobody);
+   - the ring and name coloured by faction (friendly, neutral, hostile),
+     which needs the creature's faction template; a dead creature's target
+     frame;
+   - the NPC portrait in the quest window and the target frame;
+   - the movement packets only cover walking: no jump, fall, swim or
+     turn-in-place (`MSG_MOVE_SET_FACING`) yet, and the server's speed or
+     teleport corrections are not read;
+   - NPC text for a female player (`NPC_TEXT_UPDATE` is read as the male text
+     only), emotes and the NPC's greeting animation.
 2. **Cursor item corners**: splitting a stack (the dialog), dropping an item on
    a bag button to equip a bag, on the paper doll, on the ground to destroy it;
    selling to a vendor.
