@@ -376,8 +376,8 @@ static int layer_rank(const char *name) {
   return 2;
 }
 
-static void add_region(const Element *element, int frame_node, int layer,
-                       const char *frame_name) {
+static int add_region(const Element *element, int frame_node, int layer,
+                      const char *frame_name) {
   size_t tag_length = strlen(element->tag);
   bool is_texture = tag_length >= 7 &&
                     strcmp(element->tag + tag_length - 7, "Texture") == 0;
@@ -422,6 +422,7 @@ static void add_region(const Element *element, int frame_node, int layer,
 
   regions[region_count] = (Region){node, layer};
   region_frame[region_count++] = frame_node;
+  return node;
 }
 
 static void add_layers(const Element *layers, int frame_node, const char *frame_name) {
@@ -434,6 +435,19 @@ static void add_layers(const Element *layers, int frame_node, const char *frame_
         add_region(layer->children[j], frame_node, rank, frame_name);
     }
   }
+}
+
+//what a button shows only while it is pressed, hovered or checked
+static void add_state_texture(const Contributors *c, int frame_node,
+                              const char *frame_name, const char *tag,
+                              UiState state, int layer) {
+  const Element *element = effective_child(c, tag);
+  if (!element)
+    return;
+
+  int node = add_region(element, frame_node, layer, frame_name);
+  nodes[node].state = state;
+  nodes[node].hidden = true;
 }
 
 static const char *strata_names[] = {"WORLD",  "BACKGROUND", "LOW",
@@ -492,6 +506,12 @@ static void add_frame(const Element *element, int parent, const char *parent_nam
   const Element *normal = effective_child(&c, "NormalTexture");
   if (normal)
     add_region(normal, node, 2, name);
+
+  def->clickable = strcmp(element->tag, "Button") == 0 ||
+                   strcmp(element->tag, "CheckButton") == 0;
+  add_state_texture(&c, node, name, "PushedTexture", UI_STATE_PUSHED, 3);
+  add_state_texture(&c, node, name, "HighlightTexture", UI_STATE_HIGHLIGHT, 4);
+  add_state_texture(&c, node, name, "CheckedTexture", UI_STATE_CHECKED, 4);
 
   const Element *bar_texture = bar ? effective_child(&c, "BarTexture") : NULL;
   if (bar_texture) {
@@ -621,7 +641,7 @@ static void write_node(FILE *out, int index) {
   write_floats(out, n->color, 4);
   fputs("}, ", out);
   write_float(out, n->font_size);
-  fprintf(out, ", %d},\n", n->justify);
+  fprintf(out, ", %d, %d, %d},\n", n->justify, n->clickable, n->state);
 }
 
 static int compare_regions(const void *a, const void *b) {

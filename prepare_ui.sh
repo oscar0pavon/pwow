@@ -24,3 +24,17 @@ extra_textures="interface/buttons/ui-quickslot.png"
     "$BLP_CONVERT" --to-png "$out/$blp" > /dev/null
     rm "$out/$blp"
   done
+
+# the spells of the action bar and their icons, from the same dbc files the server reads
+DBC_SOURCE=${DBC_SOURCE:-/root/sources/vmangos/run/bin/5875/dbc}
+mkdir -p "$out/dbc"
+for dbc in Spell SpellIcon SpellShapeshiftForm; do
+  [ -f "$out/dbc/$dbc.dbc" ] || cp "$DBC_SOURCE/$dbc.dbc" "$out/dbc/$dbc.dbc"
+done
+
+if [ ! -d "$out/interface/icons" ]; then
+  mkdir -p "$out/interface/icons"
+  cp "$GAME_DATA"/interface/icons/*.blp "$out/interface/icons/"
+  "$BLP_CONVERT" --batch "$out/interface/icons" > /dev/null
+  rm -f "$out"/interface/icons/*.blp
+fi

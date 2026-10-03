@@ -110,4 +110,8 @@ bool pe_wowworld_query_item(PWowWorld *world, PWowObjectState *state,
                             u32 item_entry, PWowItemInfo *out, char *error,
                             int error_max);
 
+//CMSG_CAST_SPELL for spell, at target_guid, or at nobody (the caster) for 0.
+//does not wait for an answer: whatever the server says back is not read
+bool pe_wowworld_cast_spell(PWowWorld *world, u32 spell, u64 target_guid);
+
 #endif

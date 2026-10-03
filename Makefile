@@ -29,8 +29,8 @@ all: pwow adt2wot wmo2wwb m22wwb m22gltf xml2ui test_auth resolve_creatures
 compile_commands:
 	make --always-make --dry-run
 
-pwow: main.c camera.c input.c creatures.c equipment.c gamedata.c attached.c hud.c ui_frames.c $(wowauth_objs) $(WORKDIR)/lib/libpengine.a
-	$(CC) $(CFLAGS) $(GLOBAL_DEFINE) $(CINCLUDES) main.c camera.c input.c creatures.c equipment.c gamedata.c attached.c hud.c ui_frames.c $(wowauth_objs) \
+pwow: main.c camera.c input.c creatures.c equipment.c gamedata.c attached.c hud.c actionbar.c ui_frames.c $(wowauth_objs) $(WORKDIR)/lib/libpengine.a
+	$(CC) $(CFLAGS) $(GLOBAL_DEFINE) $(CINCLUDES) main.c camera.c input.c creatures.c equipment.c gamedata.c attached.c hud.c actionbar.c ui_frames.c $(wowauth_objs) \
 		-L$(WORKDIR)/lib -lpengine $(LIBRARIES) $(WOWAUTH_LIBRARIES) -o pwow
 
 test_auth: tools/test_auth.c $(wowauth_objs) $(WORKDIR)/lib/libpengine.a

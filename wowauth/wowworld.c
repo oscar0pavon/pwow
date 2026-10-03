@@ -19,6 +19,8 @@
 #define OP_SMSG_UPDATE_OBJECT 169
 #define OP_SMSG_COMPRESSED_UPDATE_OBJECT 502
 #define OP_SMSG_MONSTER_MOVE 221
+#define OP_SMSG_ACTION_BUTTONS 0x129
+#define OP_CMSG_CAST_SPELL 0x12E
 #define OP_CMSG_ITEM_QUERY_SINGLE 86
 #define OP_SMSG_ITEM_QUERY_SINGLE_RESPONSE 88
 
@@ -216,6 +218,28 @@ bool pe_wowworld_connect(const char *host, int port, const char *account,
 //specific one. generous: a crowded login can queue a lot of state
 //(reputation, action bars, the player's own object update...) ahead of the
 //packet actually being waited for
+//what any wait loop and the poll keep from a packet that is not the one they
+//wait for: true when it was state, folded in
+static bool fold_world_packet(PWowObjectState *state, u16 opcode,
+                              const u8 *payload, int payload_len) {
+  switch (opcode) {
+  case OP_SMSG_UPDATE_OBJECT:
+    pe_wowobject_handle_packet(state, payload, payload_len, false);
+    return true;
+  case OP_SMSG_COMPRESSED_UPDATE_OBJECT:
+    pe_wowobject_handle_packet(state, payload, payload_len, true);
+    return true;
+  case OP_SMSG_MONSTER_MOVE:
+    pe_wowobject_handle_monster_move(state, payload, payload_len);
+    return true;
+  case OP_SMSG_ACTION_BUTTONS:
+    pe_wowobject_handle_action_buttons(state, payload, payload_len);
+    return true;
+  default:
+    return false;
+  }
+}
+
 #define WAIT_FOR_OPCODE_ATTEMPTS 256
 
 bool pe_wowworld_char_enum(PWowWorld *world, PWowCharacter *out, int out_max,
@@ -302,13 +326,9 @@ bool pe_wowworld_player_login(PWowWorld *world, PWowObjectState *state,
           "disconnected while waiting for SMSG_LOGIN_VERIFY_WORLD");
       return false;
     }
-    if (opcode == OP_SMSG_UPDATE_OBJECT)
-      pe_wowobject_handle_packet(state, payload, payload_len, false);
-    else if (opcode == OP_SMSG_COMPRESSED_UPDATE_OBJECT)
-      pe_wowobject_handle_packet(state, payload, payload_len, true);
-    else if (opcode == OP_SMSG_MONSTER_MOVE)
-      pe_wowobject_handle_monster_move(state, payload, payload_len);
-    else if (opcode == OP_SMSG_LOGIN_VERIFY_WORLD) {
+    if (fold_world_packet(state, opcode, payload, payload_len))
+      continue;
+    if (opcode == OP_SMSG_LOGIN_VERIFY_WORLD) {
       found = true;
       break;
     }
@@ -360,13 +380,9 @@ bool pe_wowworld_query_item(PWowWorld *world, PWowObjectState *state,
           "disconnected while waiting for SMSG_ITEM_QUERY_SINGLE_RESPONSE");
       return false;
     }
-    if (opcode == OP_SMSG_UPDATE_OBJECT)
-      pe_wowobject_handle_packet(state, payload, payload_len, false);
-    else if (opcode == OP_SMSG_COMPRESSED_UPDATE_OBJECT)
-      pe_wowobject_handle_packet(state, payload, payload_len, true);
-    else if (opcode == OP_SMSG_MONSTER_MOVE)
-      pe_wowobject_handle_monster_move(state, payload, payload_len);
-    else if (opcode == OP_SMSG_ITEM_QUERY_SINGLE_RESPONSE) {
+    if (fold_world_packet(state, opcode, payload, payload_len))
+      continue;
+    if (opcode == OP_SMSG_ITEM_QUERY_SINGLE_RESPONSE) {
       found = true;
       break;
     }
@@ -430,11 +446,35 @@ void pe_wowworld_poll(PWowWorld *world, PWowObjectState *state) {
       world->connected = false;
       return;
     }
-    if (opcode == OP_SMSG_UPDATE_OBJECT)
-      pe_wowobject_handle_packet(state, payload, payload_len, false);
-    else if (opcode == OP_SMSG_COMPRESSED_UPDATE_OBJECT)
-      pe_wowobject_handle_packet(state, payload, payload_len, true);
-    else if (opcode == OP_SMSG_MONSTER_MOVE)
-      pe_wowobject_handle_monster_move(state, payload, payload_len);
+    fold_world_packet(state, opcode, payload, payload_len);
   }
+}
+
+#define TARGET_FLAG_SELF 0x0000
+#define TARGET_FLAG_UNIT 0x0002
+
+static void wbuf_packed_guid(WBuf *b, u64 guid) {
+  u8 mask = 0;
+  u8 bytes[8];
+  int count = 0;
+
+  for (int i = 0; i < 8; i++) {
+    u8 byte = (u8)(guid >> (8 * i));
+    if (byte) {
+      mask |= (u8)(1 << i);
+      bytes[count++] = byte;
+    }
+  }
+  wbuf_u8(b, mask);
+  wbuf_bytes(b, bytes, count);
+}
+
+bool pe_wowworld_cast_spell(PWowWorld *world, u32 spell, u64 target_guid) {
+  WBuf buf = {0};
+  wbuf_u32(&buf, spell);
+  wbuf_u16(&buf, target_guid ? TARGET_FLAG_UNIT : TARGET_FLAG_SELF);
+  if (target_guid)
+    wbuf_packed_guid(&buf, target_guid);
+
+  return pe_wowworld_send_packet(world, OP_CMSG_CAST_SPELL, buf.data, buf.len);
 }

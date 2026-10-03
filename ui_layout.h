@@ -35,6 +35,13 @@ typedef enum UiJustify {
   UI_JUSTIFY_RIGHT,
 } UiJustify;
 
+typedef enum UiState {
+  UI_STATE_NONE,
+  UI_STATE_PUSHED,
+  UI_STATE_HIGHLIGHT,
+  UI_STATE_CHECKED,
+} UiState;
+
 typedef struct UiAnchorDef {
   UiPoint point;
   int relative;
@@ -59,6 +66,8 @@ typedef struct UiNodeDef {
   float color[4];
   float font_size;
   UiJustify justify;
+  bool clickable;
+  UiState state;
 } UiNodeDef;
 
 extern const UiNodeDef ui_nodes[];

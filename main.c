@@ -28,6 +28,7 @@
 #include "attached.h"
 #include "creatures.h"
 #include "equipment.h"
+#include "actionbar.h"
 #include "hud.h"
 #include "input.h"
 
@@ -369,6 +370,9 @@ static bool mouse_look_delta(float *dx, float *dy) {
     return false;
   }
 
+  if (!mouse_look_active && hud_mouse_over_ui())
+    return false;
+
   if (!mouse_look_active) {
     mouse_look_x = mouse.x;
     mouse_look_y = mouse.y;
@@ -564,6 +568,8 @@ static void fill_lighting(PTerrainFrame *frame) {
   glm_vec4_copy((vec4){FOG_START, FOG_END, 0, 0}, frame->fog_range);
 }
 
+//right of the unit frames, which take the top left
+#define DEBUG_TEXT_X 480
 #define NPC_HUD_LINES 5
 
 //lists the nearest few tracked creatures below the position line, nearest
@@ -600,14 +606,14 @@ static void draw_npc_hud(float y) {
   char line[64];
   vec3 color = {0.7f, 0.9f, 1.f};
   snprintf(line, sizeof(line), "npcs: %d", npc_state.count);
-  pe_text_draw(line, color, 10, y);
+  pe_text_draw(line, color, DEBUG_TEXT_X, y);
 
   for (int i = 0; i < best_count; i++) {
     PWowCreature *c = &npc_state.creatures[best_idx[i]];
     y += pe_text_cell_height();
     snprintf(line, sizeof(line), "  entry=%u display=%u %.0fy", c->entry,
              c->display_id, best_dist[i]);
-    pe_text_draw(line, color, 10, y);
+    pe_text_draw(line, color, DEBUG_TEXT_X, y);
   }
 }
 
@@ -631,7 +637,7 @@ static void pwow_draw_scene(PRenderTarget *target, VkCommandBuffer *command,
 
   pe_text_begin(*command, target, image_index);
   hud_draw_text();
-  pe_text_draw(hud_line, (vec3){1.f, 1.f, 1.f}, 10, pe_text_ascent() + 10);
+  pe_text_draw(hud_line, (vec3){1.f, 1.f, 1.f}, DEBUG_TEXT_X, pe_text_ascent() + 10);
   if (live_mode)
     draw_npc_hud(pe_text_ascent() + 10 + pe_text_cell_height());
   pe_text_end();
@@ -668,6 +674,8 @@ static void pwow_init() {
   hud_show("TargetHighLevelTexture", false);
   hud_show("TargetFrame", false);
   init_action_bar();
+  if (!actionbar_init("data/dbc"))
+    LOG("pwow: can't read the spell dbc files, run ./prepare_ui.sh\n");
   hud_set_bar("MainMenuExpBar", 0.f, NULL);
   hud_set_text("TargetName", "Target");
   hud_set_bar("TargetFrameHealthBar", 0.6f, (float[]){0.f, 1.f, 0.f});
@@ -967,9 +975,46 @@ static void update_live_character(float seconds) {
   pwow_camera_update(&player_camera, &main_camera, player_position, seconds);
 }
 
+#define SPELL_ATTACK 6603
+
+static void use_action_slot(int slot) {
+  unsigned spell = actionbar_spell(&npc_state, slot);
+  if (!live_mode || !spell || spell == SPELL_ATTACK)
+    return;
+
+  pe_wowworld_cast_spell(&world_conn, spell, 0);
+  LOG("pwow: cast spell %u from slot %d\n", spell, slot);
+}
+
+//ActionButton1 to 12 of the bar, by the click on one
+static void use_clicked_button(const char *name) {
+  int slot;
+  if (name && sscanf(name, "ActionButton%d", &slot) == 1)
+    use_action_slot(slot);
+}
+
+//the keys 1 to 9 and 0 are slots 1 to 10, acting once as they go down
+static void use_action_keys() {
+  Key *keys[] = {&input.KEY_1, &input.KEY_2, &input.KEY_3, &input.KEY_4,
+                 &input.KEY_5, &input.KEY_6, &input.KEY_7, &input.KEY_8,
+                 &input.KEY_9, &input.KEY_0};
+  static bool was_down[10];
+
+  for (int i = 0; i < 10; i++) {
+    if (keys[i]->pressed && !was_down[i])
+      use_action_slot(i + 1);
+    was_down[i] = keys[i]->pressed;
+  }
+}
+
 static void pwow_update() {
+  use_clicked_button(hud_update_mouse(mouse.x, mouse.y, mouse.left.pressed));
+  use_action_keys();
+
   if (live_mode) {
     pe_wowworld_poll(&world_conn, &npc_state);
+    hud_update_player(&npc_state);
+    actionbar_update(&npc_state);
     sync_player_equipment();
     pe_wowobject_state_tick(&npc_state, delta_time);
     creatures_sync(&npc_state);

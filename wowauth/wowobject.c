@@ -29,6 +29,16 @@
 
 #define FIELD_OBJECT_ENTRY 3
 #define FIELD_OBJECT_SCALE_X 4
+#define FIELD_UNIT_TARGET 16
+#define FIELD_UNIT_HEALTH 22
+#define FIELD_UNIT_POWER1 23
+#define FIELD_UNIT_MAXHEALTH 28
+#define FIELD_UNIT_MAXPOWER1 29
+#define FIELD_UNIT_LEVEL 34
+#define FIELD_UNIT_BYTES_0 36
+#define FIELD_UNIT_BYTES_2 164
+#define FIELD_PLAYER_XP 716
+#define FIELD_PLAYER_NEXT_LEVEL_XP 717
 #define FIELD_UNIT_DISPLAYID 131
 #define FIELD_UNIT_VIRTUAL_ITEM_SLOT_DISPLAY 37
 #define FIELD_UNIT_VIRTUAL_ITEM_INFO 40
@@ -221,7 +231,14 @@ static bool parse_movement_block(Cursor *c, bool *has_position, float *x,
 
 //which of a block's unit fields it carried: a values block only holds the
 //fields that changed, so what it did not carry must stay as it was
+//the unit fields up to BYTES_2, kept as the block sent them
+#define UNIT_RAW_FIELDS 170
+
 typedef struct UnitUpdate {
+  u32 raw[UNIT_RAW_FIELDS];
+  bool has_raw[UNIT_RAW_FIELDS];
+  u32 xp, next_level_xp;
+  bool has_xp, has_next_level_xp;
   float scale;
   bool has_scale;
   PWowVirtualItems items;
@@ -248,7 +265,43 @@ static void read_held_field(UnitUpdate *held, int field, u32 value) {
   }
 }
 
+static void apply_field(u32 *out, const UnitUpdate *held, int field) {
+  if (held->has_raw[field])
+    *out = held->raw[field];
+}
+
+static void apply_stats(PWowUnitStats *stats, const UnitUpdate *held) {
+  apply_field(&stats->health, held, FIELD_UNIT_HEALTH);
+  apply_field(&stats->max_health, held, FIELD_UNIT_MAXHEALTH);
+  apply_field(&stats->level, held, FIELD_UNIT_LEVEL);
+
+  for (int power = 0; power < PE_WOWOBJECT_POWERS; power++) {
+    apply_field(&stats->power[power], held, FIELD_UNIT_POWER1 + power);
+    apply_field(&stats->max_power[power], held, FIELD_UNIT_MAXPOWER1 + power);
+  }
+
+  if (held->has_raw[FIELD_UNIT_BYTES_0])
+    stats->power_type = (u8)(held->raw[FIELD_UNIT_BYTES_0] >> 24);
+
+  if (held->has_raw[FIELD_UNIT_BYTES_2])
+    stats->shapeshift_form = (u8)(held->raw[FIELD_UNIT_BYTES_2] >> 24);
+
+  if (held->has_raw[FIELD_UNIT_TARGET] && held->has_raw[FIELD_UNIT_TARGET + 1])
+    stats->target = held->raw[FIELD_UNIT_TARGET] |
+                    ((u64)held->raw[FIELD_UNIT_TARGET + 1] << 32);
+}
+
+static void apply_player_update(PWowObjectState *state, const UnitUpdate *held) {
+  apply_stats(&state->player, held);
+  if (held->has_xp)
+    state->player_xp = held->xp;
+  if (held->has_next_level_xp)
+    state->player_next_level_xp = held->next_level_xp;
+  state->player_valid = true;
+}
+
 static void apply_unit_update(PWowCreature *creature, const UnitUpdate *held) {
+  apply_stats(&creature->stats, held);
   if (held->has_scale && held->scale > 0.0f)
     creature->scale = held->scale;
   for (int slot = 0; slot < PE_WOWOBJECT_VIRTUAL_ITEM_SLOTS; slot++) {
@@ -282,6 +335,17 @@ static bool parse_values_block(Cursor *c, u32 *entry, u32 *display_id,
       if (!(mask[byte_i] & (1 << bit)))
         continue;
       u32 value = cur_u32(c);
+      if (field < UNIT_RAW_FIELDS) {
+        held->raw[field] = value;
+        held->has_raw[field] = true;
+      }
+      if (field == FIELD_PLAYER_XP) {
+        held->xp = value;
+        held->has_xp = true;
+      } else if (field == FIELD_PLAYER_NEXT_LEVEL_XP) {
+        held->next_level_xp = value;
+        held->has_next_level_xp = true;
+      }
       if (field == FIELD_OBJECT_ENTRY) {
         *entry = value;
       } else if (field == FIELD_OBJECT_SCALE_X) {
@@ -404,6 +468,8 @@ void pe_wowobject_handle_packet(PWowObjectState *state, const u8 *payload,
           existing->display_id = display_id;
         apply_unit_update(existing, &held);
       }
+      if (equip)
+        apply_player_update(state, &held);
       continue;
     }
 
@@ -457,6 +523,9 @@ void pe_wowobject_handle_packet(PWowObjectState *state, const u8 *payload,
         }
       }
     }
+
+    if (movement_ok && values_ok && equip)
+      apply_player_update(state, &held);
 
     if (!movement_ok || !values_ok)
       return;
@@ -627,4 +696,19 @@ void pe_wowobject_state_tick(PWowObjectState *state, double delta_seconds) {
 
 void pe_wowobject_set_local_player_guid(PWowObjectState *state, u64 guid) {
   state->local_player_guid = guid;
+}
+
+void pe_wowobject_handle_action_buttons(PWowObjectState *state,
+                                        const u8 *payload, int payload_len) {
+  Cursor c = {payload, payload_len, 0, false};
+
+  u32 buttons[PE_WOWOBJECT_ACTION_BUTTONS];
+  for (int i = 0; i < PE_WOWOBJECT_ACTION_BUTTONS; i++)
+    buttons[i] = cur_u32(&c);
+
+  if (c.overrun)
+    return;
+
+  memcpy(state->action_buttons, buttons, sizeof(buttons));
+  state->action_buttons_serial++;
 }

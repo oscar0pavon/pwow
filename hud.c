@@ -7,6 +7,8 @@
 #include <engine/text.h>
 #include <engine/ui.h>
 #include <engine/utils.h>
+#include <wowauth/wowobject.h>
+
 #include "ui_layout.h"
 
 //the game lays its interface out in units of a screen 768 high
@@ -75,6 +77,11 @@ void hud_set_texture(const char *name, const char *texture) {
   int node = find_node(name);
   if (node < 0)
     return;
+
+  if (!texture) {
+    states[node].image = NULL;
+    return;
+  }
 
   char path[512];
   snprintf(path, sizeof(path), "%s/%s", texture_directory, texture);
@@ -204,9 +211,7 @@ static void draw_texture(int node) {
   const UiNodeDef *def = &ui_nodes[node];
   NodeState *state = &states[node];
 
-  if (def->texture && !state->image)
-    return;
-  if (!def->texture && !def->has_color)
+  if (!state->image && !(def->has_color && !def->texture))
     return;
 
   static const float whole[4] = {0.f, 1.f, 0.f, 1.f};
@@ -288,3 +293,89 @@ void hud_draw_text() {
       draw_text(node);
   }
 }
+
+static const float POWER_COLORS[][3] = {
+    {0.f, 0.f, 1.f},   //mana
+    {1.f, 0.f, 0.f},   //rage
+    {1.f, 0.5f, 0.25f}, //focus
+    {1.f, 1.f, 0.f},   //energy
+};
+static const float HEALTH_COLOR[3] = {0.f, 1.f, 0.f};
+static const float EXPERIENCE_COLOR[3] = {0.58f, 0.f, 0.55f};
+
+static float fraction_of(u32 value, u32 maximum) {
+  return maximum ? (float)value / maximum : 0.f;
+}
+
+void hud_update_player(const PWowObjectState *state) {
+  if (!state->player_valid)
+    return;
+
+  const PWowUnitStats *player = &state->player;
+  char text[TEXT_MAX];
+
+  hud_set_bar("PlayerFrameHealthBar", fraction_of(player->health, player->max_health), HEALTH_COLOR);
+
+  int power = player->power_type < 4 ? player->power_type : 0;
+  hud_set_bar("PlayerFrameManaBar", fraction_of(player->power[power], player->max_power[power]),
+              POWER_COLORS[power]);
+
+  snprintf(text, sizeof(text), "%u", player->level);
+  hud_set_text("PlayerLevelText", text);
+
+  hud_set_bar("MainMenuExpBar", fraction_of(state->player_xp, state->player_next_level_xp),
+              EXPERIENCE_COLOR);
+}
+
+static int hovered_node = UI_SCREEN;
+static int pressed_node = UI_SCREEN;
+static bool left_was_down;
+
+static bool rect_contains(Rect rect, float x, float y) {
+  return x >= rect.left && x <= rect.left + rect.width && y >= rect.bottom &&
+         y <= rect.bottom + rect.height;
+}
+
+//the clickable node under the pointer, the one defined last when they overlap
+static int node_under(float x, float y) {
+  int found = UI_SCREEN;
+  for (int i = 0; i < ui_node_count; i++)
+    if (ui_nodes[i].clickable && is_visible(i) && rect_contains(states[i].rect, x, y))
+      found = i;
+  return found;
+}
+
+static void show_button_states() {
+  for (int i = 0; i < ui_node_count; i++) {
+    UiState state = ui_nodes[i].state;
+    if (state == UI_STATE_NONE)
+      continue;
+
+    int button = ui_nodes[i].parent;
+    bool pressed = pressed_node == button && hovered_node == button;
+    states[i].shown = (state == UI_STATE_HIGHLIGHT && hovered_node == button) ||
+                      (state == UI_STATE_PUSHED && pressed);
+  }
+}
+
+const char *hud_update_mouse(float mouse_x, float mouse_y, bool left_down) {
+  float x = mouse_x / ui_scale;
+  float y = ui_height - mouse_y / ui_scale;
+  const char *clicked = NULL;
+
+  hovered_node = node_under(x, y);
+  if (left_down && !left_was_down)
+    pressed_node = hovered_node;
+
+  if (!left_down && left_was_down) {
+    if (pressed_node != UI_SCREEN && pressed_node == hovered_node)
+      clicked = ui_nodes[pressed_node].name;
+    pressed_node = UI_SCREEN;
+  }
+
+  left_was_down = left_down;
+  show_button_states();
+  return clicked;
+}
+
+bool hud_mouse_over_ui() { return hovered_node != UI_SCREEN || pressed_node != UI_SCREEN; }

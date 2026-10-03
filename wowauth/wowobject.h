@@ -28,11 +28,30 @@ typedef struct PWowVirtualItems {
   u8 item_subclass[PE_WOWOBJECT_VIRTUAL_ITEM_SLOTS];
 } PWowVirtualItems;
 
+//UNIT_FIELD_HEALTH, POWER1..5, MAXHEALTH, MAXPOWER1..5, LEVEL and the power
+//type of BYTES_0 (UpdateFields_1_12_1.h). power 0 is mana, 1 rage, 2 focus and
+//3 energy; a values block only carries what changed, so a field it left out
+//keeps what it was
+#define PE_WOWOBJECT_POWERS 5
+
+typedef struct PWowUnitStats {
+  u32 health, max_health;
+  u32 power[PE_WOWOBJECT_POWERS];
+  u32 max_power[PE_WOWOBJECT_POWERS];
+  u32 level;
+  u8 power_type;
+  u8 shapeshift_form; //byte 3 of UNIT_FIELD_BYTES_2
+  u64 target; //UNIT_FIELD_TARGET, who it has selected
+} PWowUnitStats;
+
+#define PE_WOWOBJECT_ACTION_BUTTONS 120
+
 typedef struct PWowCreature {
   u64 guid;
   u32 entry;
   u32 display_id;
   PWowVirtualItems held;
+  PWowUnitStats stats;
   float scale; //OBJECT_FIELD_SCALE_X, the size the server sets for this unit, 1 by default
   float x, y, z, o; //what creatures_sync() actually reads - the interpolated
                     //display position/facing, kept current every frame by
@@ -85,7 +104,23 @@ typedef struct PWowObjectState {
   //characters[0].guid, the one it logged in as)
   u64 local_player_guid;
   PWowPlayerEquipment player_equipment;
+
+  //the local player's own unit fields, and PLAYER_XP and PLAYER_NEXT_LEVEL_XP
+  //that only its owner is sent. false until its first block is parsed
+  bool player_valid;
+  PWowUnitStats player;
+  u32 player_xp, player_next_level_xp;
+
+  //SMSG_ACTION_BUTTONS: 120 slots of action | type << 24, 0 for an empty one.
+  //type 0 is a spell (action its id), 0x40 a macro and 0x80 an item. serial
+  //counts how many times they came, so a reader knows to look again
+  u32 action_buttons[PE_WOWOBJECT_ACTION_BUTTONS];
+  u32 action_buttons_serial;
 } PWowObjectState;
+
+//parses one SMSG_ACTION_BUTTONS payload into state
+void pe_wowobject_handle_action_buttons(PWowObjectState *state,
+                                        const u8 *payload, int payload_len);
 
 //call once, right after login, before the first pe_wowworld_poll(): without
 //this, the local player's own CREATE_OBJECT/VALUES blocks are indistinguishable
