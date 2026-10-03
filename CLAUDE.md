@@ -23,7 +23,7 @@ make                           # here: builds ./pwow and ./adt2wot
 
 With no arguments it starts 40 yards over the Crossroads, in the Barrens (tile 36, 32, at X -437, Y 2596), looking south. With a map and a tile it starts 40 yards over the middle of that tile: the middle of Goldshire's tile is not the inn, and a big tree there can be taller than that.
 
-The world streams: tiles within `STREAM_DISTANCE` (900 yards) of the camera are loaded and the rest given back, so walk or fly as far as the converted `data/` reaches. Convert a wide block if you mean to travel: a tile that is not in `data/` is simply not there, and the edge of the block is the edge of the world.
+The world streams: tiles within `STREAM_DISTANCE` (500 yards) of the camera are loaded and the rest given back, so walk or fly as far as the converted `data/` reaches. Convert a wide block if you mean to travel: a tile that is not in `data/` is simply not there, and the edge of the block is the edge of the world.
 
 - `Makefile` defaults `WORKDIR ?= ../pengine` (override with `make WORKDIR=/path/to/pengine` if it isn't a sibling checkout) and includes pengine's `include.make`. The compile flags matter to a consumer, not just the engine: `-fcommon` and the `CGLM_FORCE_*` defines change struct layout and projection maths.
 - pengine is a **static library**, and `make` here only compares `pwow.c` against `libpengine.a`'s timestamp. After any engine change, rebuild the engine and then `make -B` here, or a stale binary is what you run.

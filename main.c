@@ -54,16 +54,17 @@ static const PAppearance PLAYER_APPEARANCE = {.skin = PLAYER_SKIN_ID};
 
 //how far from the camera the tiles are kept loaded, in yards, and how high over
 //the ground of a tile, in yards, a camera that starts over one is. the fog hides
-//the ground from 500 to 1400, so tiles are kept as far as two tiles allow
-#define STREAM_DISTANCE 900.0f
+//the ground from 250 to 600, so tiles kept 500 yards out are gone from sight
+//before their edge shows
+#define STREAM_DISTANCE 500.0f
 #define START_HEIGHT_OVER_GROUND 40.0f
 
 //the ground fades into the horizon colour and the sky climbs from it to the
 //zenith, so the fog and the horizon have to be the same
 #define HORIZON_COLOR 0.62f, 0.72f, 0.85f, 1.0f
 #define ZENITH_COLOR 0.20f, 0.42f, 0.85f, 1.0f
-#define FOG_START 500.0f
-#define FOG_END 1400.0f
+#define FOG_START 250.0f
+#define FOG_END 600.0f
 
 #define MOVE_SPEED 60.0f
 #define FAST_MOVE_FACTOR 4.0f
