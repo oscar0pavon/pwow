@@ -24,7 +24,6 @@
 #define CHARSECTIONS_SECTION_HAIR 3
 #define CHARSECTIONS_SECTION_UNDERWEAR 4
 #define TAUREN_RACE_ID 6
-#define MALE_SEX_ID 0
 
 #define CHARSECTIONS_FIELD_RACE 1
 #define CHARSECTIONS_FIELD_SEX 2
@@ -48,9 +47,11 @@ static void normalise_texture_path(char *name) {
     strcpy(name + length - 4, ".png");
 }
 
-void resolve_tauren_male_skin_path(u8 skin_id, char *out, size_t out_size) {
-  const char *fallback = "data/character/tauren/male/taurenmaleskin00_00.png";
-  snprintf(out, out_size, "%s", fallback);
+void resolve_tauren_skin_path(const PAppearance *look, char *out,
+                              size_t out_size) {
+  snprintf(out, out_size, "data/character/tauren/%s/tauren%sskin00_00.png",
+           look->sex == SEX_FEMALE ? "female" : "male",
+           look->sex == SEX_FEMALE ? "female" : "male");
 
   PWowDBC dbc;
   if (!pe_wowdbc_load(CHARSECTIONS_DBC_PATH, &dbc))
@@ -59,12 +60,12 @@ void resolve_tauren_male_skin_path(u8 skin_id, char *out, size_t out_size) {
   for (u32 r = 0; r < dbc.record_count; r++) {
     if (pe_wowdbc_get_u32(&dbc, r, CHARSECTIONS_FIELD_RACE) != TAUREN_RACE_ID)
       continue;
-    if (pe_wowdbc_get_u32(&dbc, r, CHARSECTIONS_FIELD_SEX) != MALE_SEX_ID)
+    if (pe_wowdbc_get_u32(&dbc, r, CHARSECTIONS_FIELD_SEX) != look->sex)
       continue;
     if (pe_wowdbc_get_u32(&dbc, r, CHARSECTIONS_FIELD_BASE_SECTION) !=
         CHARSECTIONS_SECTION_SKIN)
       continue;
-    if (pe_wowdbc_get_u32(&dbc, r, CHARSECTIONS_FIELD_COLOR_INDEX) != skin_id)
+    if (pe_wowdbc_get_u32(&dbc, r, CHARSECTIONS_FIELD_COLOR_INDEX) != look->skin)
       continue;
 
     char path[512];
@@ -93,9 +94,10 @@ static void body_layer_path(const PWowDBC *dbc, u32 record, u32 field,
   snprintf(out, out_size, "data/%s", path);
 }
 
-void resolve_tauren_male_body(const PAppearance *look, PBodyLayers *out) {
+void resolve_tauren_body(const PAppearance *look, PBodyLayers *out) {
   memset(out, 0, sizeof(*out));
-  resolve_tauren_male_skin_path(look->skin, out->skin, sizeof(out->skin));
+  out->sex = look->sex;
+  resolve_tauren_skin_path(look, out->skin, sizeof(out->skin));
 
   PWowDBC dbc;
   if (!pe_wowdbc_load(CHARSECTIONS_DBC_PATH, &dbc))
@@ -105,7 +107,7 @@ void resolve_tauren_male_body(const PAppearance *look, PBodyLayers *out) {
        found_underwear = false;
   for (u32 r = 0; r < dbc.record_count; r++) {
     if (pe_wowdbc_get_u32(&dbc, r, CHARSECTIONS_FIELD_RACE) != TAUREN_RACE_ID ||
-        pe_wowdbc_get_u32(&dbc, r, CHARSECTIONS_FIELD_SEX) != MALE_SEX_ID)
+        pe_wowdbc_get_u32(&dbc, r, CHARSECTIONS_FIELD_SEX) != look->sex)
       continue;
 
     u32 section = pe_wowdbc_get_u32(&dbc, r, CHARSECTIONS_FIELD_BASE_SECTION);
@@ -135,6 +137,8 @@ void resolve_tauren_male_body(const PAppearance *look, PBodyLayers *out) {
                color == look->skin) {
       body_layer_path(&dbc, r, CHARSECTIONS_FIELD_TEXTURE1, out->pelvis,
                       sizeof(out->pelvis));
+      body_layer_path(&dbc, r, CHARSECTIONS_FIELD_TEXTURE2, out->torso,
+                      sizeof(out->torso));
       found_underwear = true;
     }
   }
@@ -498,10 +502,9 @@ static const PItemRegion ITEM_REGIONS[ITEM_REGION_COUNT] = {
 //resolves one ItemDisplayInfo texture name to a data/ png path, converting
 //it from the game's own .blp the first time it's needed - tries the
 //gendered file first, then unisex, then the bare name (item_textures.hpp's
-//own resolution order), and only ever the male one, since taurenmale.glb
-//is the only race/gender pwow has converted. false if tex_name is empty or
-//none of the three spellings exist on disk
-static bool resolve_item_region_texture(const PItemRegion *region,
+//own resolution order), the gendered one being sex's. false if tex_name is
+//empty or none of the three spellings exist on disk
+static bool resolve_item_region_texture(const PItemRegion *region, u8 sex,
                                         const char *tex_name, char *out,
                                         size_t out_size) {
   if (tex_name[0] == '\0')
@@ -519,7 +522,7 @@ static bool resolve_item_region_texture(const PItemRegion *region,
   if (!blp_convert)
     blp_convert = BLP_CONVERT_PATH_DEFAULT;
 
-  static const char *suffixes[] = {"_m", "_u", ""};
+  const char *suffixes[] = {sex == SEX_FEMALE ? "_f" : "_m", "_u", ""};
   for (int s = 0; s < 3; s++) {
     char source_blp[512];
     snprintf(source_blp, sizeof(source_blp),
@@ -586,7 +589,8 @@ static void blit_region(PImage *dst, PImage *src, int dst_x, int dst_y,
 
 //composites every region texture one equipped item's own ItemDisplayInfo
 //names onto base, converting/loading each on demand
-static void composite_item_regions(PImage *base, const PItemDisplayInfo *display) {
+static void composite_item_regions(PImage *base, u8 sex,
+                                   const PItemDisplayInfo *display) {
   struct {
     const PItemRegion *region;
     const char *name;
@@ -603,7 +607,7 @@ static void composite_item_regions(PImage *base, const PItemDisplayInfo *display
 
   for (int i = 0; i < ITEM_REGION_COUNT; i++) {
     char png_path[512];
-    if (!resolve_item_region_texture(regions[i].region, regions[i].name,
+    if (!resolve_item_region_texture(regions[i].region, sex, regions[i].name,
                                      png_path, sizeof(png_path)))
       continue;
 
@@ -626,7 +630,7 @@ static void composite_item_regions(PImage *base, const PItemDisplayInfo *display
 static const struct {
   int dst_x, dst_y, width, height;
 } FACE_UPPER_REGION = {0, 160, 128, 32}, FACE_LOWER_REGION = {0, 192, 128, 64},
-  PELVIS_REGION = {128, 96, 128, 64};
+  PELVIS_REGION = {128, 96, 128, 64}, TORSO_REGION = {128, 0, 128, 64};
 
 static void composite_body_layer(PImage *base, const char *path, int dst_x,
                                  int dst_y, int width, int height) {
@@ -660,6 +664,9 @@ static void composite_body(PImage *base, const PBodyLayers *body) {
   composite_body_layer(base, body->pelvis, PELVIS_REGION.dst_x,
                        PELVIS_REGION.dst_y, PELVIS_REGION.width,
                        PELVIS_REGION.height);
+  composite_body_layer(base, body->torso, TORSO_REGION.dst_x,
+                       TORSO_REGION.dst_y, TORSO_REGION.width,
+                       TORSO_REGION.height);
 }
 
 //the model's texture type 8, which its facial hair and mane geosets draw
@@ -695,7 +702,7 @@ void apply_equipment_texture(PModel *model, PSkin *skin,
 
   composite_body(&base, body);
   for (int i = 0; i < count; i++)
-    composite_item_regions(&base, &items[i].display);
+    composite_item_regions(&base, body->sex, &items[i].display);
 
   PTexture new_texture;
   ZERO(new_texture);

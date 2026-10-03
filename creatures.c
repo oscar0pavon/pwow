@@ -43,9 +43,7 @@
 #define CREATURE_EXTRA_FIELD_HAIR_COLOR 6
 
 #define TAUREN_RACE_ID 6
-#define MALE_GENDER_ID 0
 
-#define HUMANOID_MODEL_PATH "data/character/tauren/male/taurenmale.glb"
 #define HUMANOID_FOOT_OFFSET 0.011f
 
 #define CREATURE_MODEL_FIELD_ID 0
@@ -53,6 +51,11 @@
 
 static PShader creature_shader;
 static PShader humanoid_shader;
+
+static const char *const HUMANOID_MODEL_PATHS[] = {
+    [SEX_MALE] = "data/character/tauren/male/taurenmale.glb",
+    [SEX_FEMALE] = "data/character/tauren/female/taurenfemale.glb",
+};
 
 //the equipment columns of CreatureDisplayInfoExtra, each an ItemDisplayInfo
 //id (0 for an empty slot), with the InventoryType that slot stands for.
@@ -106,8 +109,8 @@ static void lowercase(char *name) {
     *c = (char)tolower((unsigned char)*c);
 }
 
-//a humanoid is only drawn when CreatureDisplayInfoExtra names a Tauren male,
-//the one body converted so far; any other race or gender stays unresolved
+//a humanoid is only drawn when CreatureDisplayInfoExtra names a Tauren, the
+//one race converted so far; any other race stays unresolved
 static void resolve_humanoid(ResolvedDisplay *out, u32 extra_id) {
   PWowDBC extra_dbc;
   if (!pe_wowdbc_load(CREATURE_EXTRA_DBC_PATH, &extra_dbc))
@@ -116,10 +119,12 @@ static void resolve_humanoid(ResolvedDisplay *out, u32 extra_id) {
   for (u32 r = 0; r < extra_dbc.record_count; r++) {
     if (pe_wowdbc_get_u32(&extra_dbc, r, CREATURE_EXTRA_FIELD_ID) != extra_id)
       continue;
+    u32 sex = pe_wowdbc_get_u32(&extra_dbc, r, CREATURE_EXTRA_FIELD_GENDER);
     if (pe_wowdbc_get_u32(&extra_dbc, r, CREATURE_EXTRA_FIELD_RACE) != TAUREN_RACE_ID ||
-        pe_wowdbc_get_u32(&extra_dbc, r, CREATURE_EXTRA_FIELD_GENDER) != MALE_GENDER_ID)
+        (sex != SEX_MALE && sex != SEX_FEMALE))
       break;
 
+    out->look.sex = sex;
     out->look.skin = pe_wowdbc_get_u32(&extra_dbc, r, CREATURE_EXTRA_FIELD_SKIN);
     out->look.face = pe_wowdbc_get_u32(&extra_dbc, r, CREATURE_EXTRA_FIELD_FACE);
     out->look.hair_style =
@@ -501,17 +506,18 @@ static bool create_simple_instance(CreatureInstance *inst,
   return true;
 }
 
-//loads the Tauren male body once per creature, the way player_load() does,
+//loads the Tauren body of the creature's sex once per creature, the way player_load() does,
 //and dresses it from its CreatureDisplayInfoExtra row: equipment rewrites
 //the model's geosets and texture in place, so it cannot be an instance
 //sharing its buffers with another creature's
 static bool create_humanoid_instance(CreatureInstance *inst,
                                      const ResolvedDisplay *resolved) {
-  pe_vk_load_skin(&inst->skin, &inst->model, HUMANOID_MODEL_PATH);
+  pe_vk_load_skin(&inst->skin, &inst->model,
+                  HUMANOID_MODEL_PATHS[resolved->look.sex]);
   inst->model.shader = humanoid_shader;
 
   PBodyLayers body;
-  resolve_tauren_male_body(&resolved->look, &body);
+  resolve_tauren_body(&resolved->look, &body);
   pe_load_texture(body.skin, &inst->model.texture);
 
   pe_vk_create_descriptor_sets(&inst->model, pe_vk_descriptor_set_layout_skinned,

@@ -2,8 +2,10 @@
 # usage: prepare_character.sh
 # turns the game data pwow's character rendering needs into data/: the
 # CharSections.dbc that maps a race/sex/skin id to a body texture, and every
-# Tauren Male body skin tone CharSections.dbc names (there is only one
-# converted model, taurenmale.glb, made by hand with m22gltf - see TODO.md).
+# Tauren body skin tone, face, scalp and underwear it names, male and female
+# and the two models, taurenmale.glb and taurenfemale.glb, through m22gltf with
+# AnimationData.dbc so their clips carry the game's names (Stand, Walk, Run):
+# without it a clip is just "anim_<n>" and nothing picks the right one.
 # a file already converted is left alone
 set -e
 
@@ -15,6 +17,12 @@ here=$(cd "$(dirname "$0")" && pwd)
 out=$here/data
 
 mkdir -p "$out/dbc"
+
+for model in character/tauren/male/taurenmale character/tauren/female/taurenfemale; do
+  if [ ! -f "$out/$model.glb" ]; then
+    "$here/m22gltf" "$GAME_DATA" "$model.m2" "$out" "$DBC_SOURCE/AnimationData.dbc" > /dev/null
+  fi
+done
 
 if [ ! -f "$out/dbc/CharSections.dbc" ]; then
   cp "$DBC_SOURCE/CharSections.dbc" "$out/dbc/CharSections.dbc"
@@ -64,6 +72,19 @@ for id in $(seq 0 18); do
   done
   convert "$(printf "character/tauren/male/taurenmalenakedpelvisskin00_%02d.png" "$id")"
   convert "$(printf "character/tauren/male/taurenmaleskin00_%02d_extra.png" "$id")"
+done
+
+# the female body: her skin tones, faces, underwear (pelvis and torso) and
+# the mane sheet. the game ships only some faces per skin tone
+for id in $(seq 0 18); do
+  convert "$(printf "character/tauren/female/taurenfemaleskin00_%02d.png" "$id")"
+  convert "$(printf "character/tauren/female/taurenfemaleskin00_%02d_extra.png" "$id")"
+  convert "$(printf "character/tauren/female/taurenfemalenakedpelvisskin00_%02d.png" "$id")"
+  convert "$(printf "character/tauren/female/taurenfemalenakedtorsoskin00_%02d.png" "$id")"
+  for face in $(seq 0 3); do
+    convert "$(printf "character/tauren/female/taurenfemalefacelower%02d_%02d.png" "$face" "$id")"
+    convert "$(printf "character/tauren/female/taurenfemalefaceupper%02d_%02d.png" "$face" "$id")"
+  done
 done
 
 for color in 0 1 2; do

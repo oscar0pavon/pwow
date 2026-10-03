@@ -7,37 +7,45 @@
 
 #include <stdbool.h>
 
-//everything about building a Tauren-Male-shaped character's on-screen
+//everything about building a Tauren character's on-screen
 //appearance from DBC data: the body skin, and equipped items' geosets and
 //region textures. shared by the live player (main.c, whose equipped items
 //come off the wire) and humanoid creature templates (creatures.c, whose
 //come baked into CreatureDisplayInfoExtra.dbc) - the two differ only in
 //where a PEquippedItem list comes from, never in what it means once built
 
-//scans CharSections.dbc for the Tauren Male skin row of the given colour
+//CharSections.dbc's own sex ids
+#define SEX_MALE 0
+#define SEX_FEMALE 1
+
+//which of CharSections.dbc's rows a character is built from: its sex, the
+//skin colour, the face, and the hair style and colour (a Tauren's horns)
+typedef struct PAppearance {
+  u8 sex, skin, face, hair_style, hair_color;
+} PAppearance;
+
+//scans CharSections.dbc for the Tauren skin row of look's sex and colour
 //and writes its data/ path into out. falls back to skin 0 - already
 //converted by prepare_character.sh - if the DBC is missing or names no
 //such row, since a wrong skin tone beats no body texture at all
-void resolve_tauren_male_skin_path(u8 skin_id, char *out, size_t out_size);
-
-//which of CharSections.dbc's rows a character is built from: the skin colour,
-//the face, and the hair style and colour (a Tauren's horns)
-typedef struct PAppearance {
-  u8 skin, face, hair_style, hair_color;
-} PAppearance;
+void resolve_tauren_skin_path(const PAppearance *look, char *out,
+                              size_t out_size);
 
 //the data/ pngs a body is composited from, an empty string for a layer the
-//character does not have: the skin is the whole atlas and its extra the mane and horns sheet, the rest land on it
+//character does not have: the skin is the whole atlas and its extra the mane
+//and horns sheet, the rest land on it. a female's underwear has a torso as
+//well as a pelvis. sex picks the gendered spelling of an item's textures
 typedef struct PBodyLayers {
+  u8 sex;
   char skin[512], skin_extra[512];
   char face_lower[512], face_upper[512];
   char scalp_lower[512], scalp_upper[512];
-  char pelvis[512];
+  char pelvis[512], torso[512];
 } PBodyLayers;
 
-//scans CharSections.dbc for the Tauren Male rows of look: the skin, the
-//face, the scalp of the hair style and the underwear
-void resolve_tauren_male_body(const PAppearance *look, PBodyLayers *out);
+//scans CharSections.dbc for the Tauren rows of look: the skin, the face,
+//the scalp of the hair style and the underwear
+void resolve_tauren_body(const PAppearance *look, PBodyLayers *out);
 
 //classic InventoryType (vmangos ItemPrototype.h) - which slot a PEquippedItem
 //names, independent of where its own data originally came from (a player's

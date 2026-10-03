@@ -9,7 +9,7 @@
 //"simple" one has ExtendedDisplayInfoID 0 in CreatureDisplayInfo.dbc, so its
 //look is its own model and texture. a humanoid has a CreatureDisplayInfoExtra
 //row instead (race/gender/skin/face/hair/equipment) and is dressed through
-//equipment.h like the player; only a Tauren male is drawn so far, any other
+//equipment.h like the player; only a Tauren is drawn so far, any other
 //humanoid is tracked in npc_state but never given an instance. models and
 //textures must already be converted by prepare_creatures.sh and
 //prepare_character.sh; one that is not is silently skipped

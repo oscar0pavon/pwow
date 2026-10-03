@@ -214,7 +214,7 @@ static void sync_player_equipment() {
   apply_equipment_geosets(&player_model, items, item_count);
 
   PBodyLayers body;
-  resolve_tauren_male_body(&PLAYER_APPEARANCE, &body);
+  resolve_tauren_body(&PLAYER_APPEARANCE, &body);
   apply_equipment_texture(&player_model, &player_skin, &body, items,
                           item_count);
 }
@@ -340,8 +340,8 @@ static void player_load() {
   player_model.shader = player_shader;
 
   char player_skin_path[512];
-  resolve_tauren_male_skin_path(PLAYER_SKIN_ID, player_skin_path,
-                                sizeof(player_skin_path));
+  resolve_tauren_skin_path(&PLAYER_APPEARANCE, player_skin_path,
+                           sizeof(player_skin_path));
   pe_load_texture(player_skin_path, &player_model.texture);
 
   pe_vk_create_descriptor_sets(&player_model, pe_vk_descriptor_set_layout_skinned,
