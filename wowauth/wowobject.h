@@ -15,10 +15,24 @@
 
 #define PE_WOWOBJECT_CREATURES_MAX 512
 
+//what a unit holds in its hands, from UNIT_VIRTUAL_ITEM_SLOT_DISPLAY and
+//UNIT_VIRTUAL_ITEM_INFO (UpdateFields_1_12_1.h): slot 0 the main hand, 1 the
+//off hand (a shield is an item here too) and 2 the ranged weapon. display is
+//an ItemDisplayInfo id, 0 for an empty hand; item_class and item_subclass are
+//the item's own (2 a weapon, 4 armor and subclass 6 of it a shield)
+#define PE_WOWOBJECT_VIRTUAL_ITEM_SLOTS 3
+
+typedef struct PWowVirtualItems {
+  u32 display[PE_WOWOBJECT_VIRTUAL_ITEM_SLOTS];
+  u8 item_class[PE_WOWOBJECT_VIRTUAL_ITEM_SLOTS];
+  u8 item_subclass[PE_WOWOBJECT_VIRTUAL_ITEM_SLOTS];
+} PWowVirtualItems;
+
 typedef struct PWowCreature {
   u64 guid;
   u32 entry;
   u32 display_id;
+  PWowVirtualItems held;
   float x, y, z, o; //what creatures_sync() actually reads - the interpolated
                     //display position/facing, kept current every frame by
                     //pe_wowobject_state_tick() while moving below is set

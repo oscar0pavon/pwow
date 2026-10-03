@@ -29,6 +29,8 @@
 
 #define FIELD_OBJECT_ENTRY 3
 #define FIELD_UNIT_DISPLAYID 131
+#define FIELD_UNIT_VIRTUAL_ITEM_SLOT_DISPLAY 37
+#define FIELD_UNIT_VIRTUAL_ITEM_INFO 40
 
 //PLAYER_VISIBLE_ITEM_1_0 = UNIT_END + 0x48 (UpdateFields_1_12_1.h; UNIT_END
 //188 matches this file's own VALUES_MASK_BYTES_MAX comment below). each
@@ -216,12 +218,50 @@ static bool parse_movement_block(Cursor *c, bool *has_position, float *x,
 //player's equipment was never seen at all
 #define VALUES_MASK_BYTES_MAX 256
 
+//which of a block's held-item fields it carried: a values block only holds
+//the fields that changed, so what it did not carry must stay as it was
+typedef struct HeldUpdate {
+  PWowVirtualItems items;
+  bool has_display[PE_WOWOBJECT_VIRTUAL_ITEM_SLOTS];
+  bool has_info[PE_WOWOBJECT_VIRTUAL_ITEM_SLOTS];
+} HeldUpdate;
+
+//a slot's info is two dwords: class, subclass, material and inventory type as
+//bytes, then the sheath (Creature::SetVirtualItem)
+static void read_held_field(HeldUpdate *held, int field, u32 value) {
+  int display_slot = field - FIELD_UNIT_VIRTUAL_ITEM_SLOT_DISPLAY;
+  if (display_slot >= 0 && display_slot < PE_WOWOBJECT_VIRTUAL_ITEM_SLOTS) {
+    held->items.display[display_slot] = value;
+    held->has_display[display_slot] = true;
+    return;
+  }
+
+  int info = field - FIELD_UNIT_VIRTUAL_ITEM_INFO;
+  if (info >= 0 && info < 2 * PE_WOWOBJECT_VIRTUAL_ITEM_SLOTS && info % 2 == 0) {
+    int slot = info / 2;
+    held->items.item_class[slot] = (u8)(value & 0xFF);
+    held->items.item_subclass[slot] = (u8)((value >> 8) & 0xFF);
+    held->has_info[slot] = true;
+  }
+}
+
+static void apply_held_update(PWowCreature *creature, const HeldUpdate *held) {
+  for (int slot = 0; slot < PE_WOWOBJECT_VIRTUAL_ITEM_SLOTS; slot++) {
+    if (held->has_display[slot])
+      creature->held.display[slot] = held->items.display[slot];
+    if (held->has_info[slot]) {
+      creature->held.item_class[slot] = held->items.item_class[slot];
+      creature->held.item_subclass[slot] = held->items.item_subclass[slot];
+    }
+  }
+}
+
 //equip is NULL unless this block's guid is the local player's own
 //(pe_wowobject_handle_packet decides that before calling in) - every other
 //player/unit/item/gameobject block is still fully walked, to keep the
 //cursor in sync, just without anywhere to put a visible-item field
 static bool parse_values_block(Cursor *c, u32 *entry, u32 *display_id,
-                               PWowPlayerEquipment *equip) {
+                               HeldUpdate *held, PWowPlayerEquipment *equip) {
   u8 block_count = cur_u8(c);
   int mask_bytes = block_count * 4;
   if (mask_bytes > VALUES_MASK_BYTES_MAX)
@@ -241,6 +281,10 @@ static bool parse_values_block(Cursor *c, u32 *entry, u32 *display_id,
         *entry = value;
       else if (field == FIELD_UNIT_DISPLAYID)
         *display_id = value;
+      else if (field >= FIELD_UNIT_VIRTUAL_ITEM_SLOT_DISPLAY &&
+               field < FIELD_UNIT_VIRTUAL_ITEM_INFO +
+                           2 * PE_WOWOBJECT_VIRTUAL_ITEM_SLOTS)
+        read_held_field(held, field, value);
       else if (equip && field >= FIELD_PLAYER_VISIBLE_ITEM_1_0) {
         int rel = field - FIELD_PLAYER_VISIBLE_ITEM_1_0;
         int slot = rel / PLAYER_VISIBLE_ITEM_STRIDE;
@@ -339,7 +383,9 @@ void pe_wowobject_handle_packet(PWowObjectState *state, const u8 *payload,
 
     if (update_type == UPDATETYPE_VALUES) {
       u32 entry = 0, display_id = 0;
-      if (!parse_values_block(&c, &entry, &display_id, equip))
+      HeldUpdate held;
+      memset(&held, 0, sizeof(held));
+      if (!parse_values_block(&c, &entry, &display_id, &held, equip))
         return;
       PWowCreature *existing = find_creature(state, guid);
       if (existing) {
@@ -347,6 +393,7 @@ void pe_wowobject_handle_packet(PWowObjectState *state, const u8 *payload,
           existing->entry = entry;
         if (display_id)
           existing->display_id = display_id;
+        apply_held_update(existing, &held);
       }
       continue;
     }
@@ -380,8 +427,10 @@ void pe_wowobject_handle_packet(PWowObjectState *state, const u8 *payload,
     float x = 0, y = 0, z = 0, o = 0;
     bool movement_ok = parse_movement_block(&c, &has_position, &x, &y, &z, &o);
     u32 entry = 0, display_id = 0;
-    bool values_ok =
-        movement_ok && parse_values_block(&c, &entry, &display_id, equip);
+    HeldUpdate held;
+    memset(&held, 0, sizeof(held));
+    bool values_ok = movement_ok && parse_values_block(&c, &entry, &display_id,
+                                                       &held, equip);
 
     if (movement_ok && values_ok && object_type == TYPEID_UNIT) {
       PWowCreature *creature = find_or_add_creature(state, guid);
@@ -390,6 +439,7 @@ void pe_wowobject_handle_packet(PWowObjectState *state, const u8 *payload,
           creature->entry = entry;
         if (display_id)
           creature->display_id = display_id;
+        apply_held_update(creature, &held);
         if (has_position) {
           creature->x = x;
           creature->y = -y; //see the same flip's comment in the MOVEMENT case
