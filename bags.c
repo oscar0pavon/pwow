@@ -49,6 +49,14 @@ static PWowDBC item_display;
 static bool ready;
 static u32 shown_serial = (u32)-1;
 
+//the item the pointer holds: where it lies, which stays put on the server
+//until it is dropped
+static struct {
+  bool active;
+  int bag, slot;
+  u32 entry;
+} cursor;
+
 static int node_named(const char *format, int number, const char *suffix) {
   char name[96];
   snprintf(name, sizeof(name), format, number, suffix);
@@ -144,12 +152,13 @@ static void fill_items(const PWowInventory *inv, BagFrame *f) {
     int slot = f->size - j;
     PWowSlotView view = pe_wowinventory_slot(inv, f->bag, slot);
 
-    show_icon(inv, f->icon[j], view.filled ? view.entry : 0, NULL);
+    bool carried = cursor.active && cursor.bag == f->bag && cursor.slot == slot;
+    show_icon(inv, f->icon[j], view.filled && !carried ? view.entry : 0, NULL);
 
     char count[16];
     snprintf(count, sizeof(count), "%u", view.count);
     hud_set_node_text(f->count[j], count);
-    hud_show_node(f->count[j], view.filled && view.count > 1);
+    hud_show_node(f->count[j], view.filled && view.count > 1 && !carried);
   }
 }
 
@@ -285,6 +294,8 @@ static void generate_frame(const PWowInventory *inv, BagFrame *f, int size, int 
   fill_items(inv, f);
 }
 
+static void put_down(const PWowInventory *inv);
+
 static BagFrame *open_frame_of(int bag) {
   for (int k = 0; k < FRAMES; k++)
     if (frames[k].open && frames[k].bag == bag)
@@ -358,6 +369,9 @@ void bags_update(const PWowInventory *inv) {
     return;
   shown_serial = inv->serial;
 
+  if (cursor.active && pe_wowinventory_slot(inv, cursor.bag, cursor.slot).entry != cursor.entry)
+    put_down(inv);
+
   for (int bag = 1; bag <= PE_WOWINV_BAGS; bag++)
     show_icon(inv, bar_icon[bag], pe_wowinventory_bag_entry(inv, bag), EMPTY_BAG_ICON);
 
@@ -390,6 +404,48 @@ static void server_place(int bag, int slot, u8 *bag_index, u8 *slot_index) {
   }
 }
 
+static void refresh_open_frames(const PWowInventory *inv) {
+  for (int k = 0; k < FRAMES; k++)
+    if (frames[k].open)
+      fill_items(inv, &frames[k]);
+}
+
+static void put_down(const PWowInventory *inv) {
+  cursor.active = false;
+  hud_set_cursor(NULL);
+  refresh_open_frames(inv);
+}
+
+void bags_cancel_cursor(const PWowInventory *inv) {
+  if (cursor.active)
+    put_down(inv);
+}
+
+static void pick_up(const PWowInventory *inv, int bag, int slot) {
+  PWowSlotView view = pe_wowinventory_slot(inv, bag, slot);
+  char icon[160];
+  if (!view.filled || !item_icon(inv, view.entry, icon, sizeof(icon)))
+    return;
+
+  cursor.active = true;
+  cursor.bag = bag;
+  cursor.slot = slot;
+  cursor.entry = view.entry;
+  hud_set_cursor(icon);
+  refresh_open_frames(inv);
+}
+
+static void drop_on(const PWowInventory *inv, int bag, int slot, PWowWorld *world) {
+  bool same_place = cursor.bag == bag && cursor.slot == slot;
+  if (!same_place) {
+    u8 dst_bag, dst_slot, src_bag, src_slot;
+    server_place(bag, slot, &dst_bag, &dst_slot);
+    server_place(cursor.bag, cursor.slot, &src_bag, &src_slot);
+    pe_wowworld_swap_item(world, dst_bag, dst_slot, src_bag, src_slot);
+  }
+  put_down(inv);
+}
+
 static void use_item(const PWowInventory *inv, int bag, int slot, PWowWorld *world) {
   PWowSlotView view = pe_wowinventory_slot(inv, bag, slot);
   if (!view.filled)
@@ -414,8 +470,18 @@ bool bags_click(HudClick click, const PWowInventory *inv, PWowWorld *world) {
   if (sscanf(click.name, "ContainerFrame%dItem%d", &frame, &item) == 2 && frame >= 1 &&
       frame <= FRAMES && item >= 1 && item <= MAX_ITEMS) {
     BagFrame *f = &frames[frame - 1];
-    if (click.button == 2 && f->open)
-      use_item(inv, f->bag, f->size - item + 1, world);
+    int slot = f->size - item + 1;
+    if (!f->open)
+      return true;
+
+    if (click.button == 2 && cursor.active)
+      put_down(inv);
+    else if (click.button == 2)
+      use_item(inv, f->bag, slot, world);
+    else if (cursor.active)
+      drop_on(inv, f->bag, slot, world);
+    else
+      pick_up(inv, f->bag, slot);
     return true;
   }
 

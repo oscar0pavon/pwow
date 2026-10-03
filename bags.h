@@ -25,4 +25,7 @@ void bags_toggle_all(const PWowInventory *inventory);
 //anything else. a right click on an item uses it, or equips it
 bool bags_click(HudClick click, const PWowInventory *inventory, PWowWorld *world);
 
+//puts down what the pointer carries without dropping it anywhere
+void bags_cancel_cursor(const PWowInventory *inventory);
+
 #endif

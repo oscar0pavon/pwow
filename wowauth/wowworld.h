@@ -119,6 +119,7 @@ bool pe_wowworld_cast_spell(PWowWorld *world, u32 spell, u64 target_guid);
 //slots start at 0. neither waits for an answer
 bool pe_wowworld_use_item(PWowWorld *world, u8 bag_index, u8 slot);
 bool pe_wowworld_autoequip_item(PWowWorld *world, u8 bag_index, u8 slot);
+bool pe_wowworld_swap_item(PWowWorld *world, u8 dst_bag, u8 dst_slot, u8 src_bag, u8 src_slot);
 
 //asks, without waiting, for the template of the first few owned items whose
 //kind was not asked about yet; the answers arrive through pe_wowworld_poll()

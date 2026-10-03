@@ -48,6 +48,9 @@ typedef struct HudClick {
 //that was clicked (pressed and let go over it) since the last call
 HudClick hud_update_mouse(float mouse_x, float mouse_y, bool left_down, bool right_down);
 
+//an icon the pointer carries, drawn on it over everything; NULL for none
+void hud_set_cursor(const char *texture);
+
 //the pointer is over a button, or holds one: not the world's
 bool hud_mouse_over_ui();
 

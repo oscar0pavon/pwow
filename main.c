@@ -1000,6 +1000,13 @@ static void use_clicked_button(HudClick click) {
 }
 
 //the keys 1 to 9 and 0 are slots 1 to 10, acting once as they go down
+static void cancel_cursor_key() {
+  static bool was_down;
+  if (input.ESC.pressed && !was_down && live_mode)
+    bags_cancel_cursor(&npc_state.inventory);
+  was_down = input.ESC.pressed;
+}
+
 static void toggle_bags_key() {
   static bool was_down;
   if (input.B.pressed && !was_down && live_mode)
@@ -1024,6 +1031,7 @@ static void pwow_update() {
   use_clicked_button(hud_update_mouse(mouse.x, mouse.y, mouse.left.pressed, mouse.right.pressed));
   use_action_keys();
   toggle_bags_key();
+  cancel_cursor_key();
 
   if (live_mode) {
     pe_wowworld_poll(&world_conn, &npc_state);

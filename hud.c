@@ -41,6 +41,8 @@ typedef struct NodeState {
 
 static NodeState states[HUD_NODES_MAX];
 static char texture_directory[256];
+static float pointer_x, pointer_y;
+static PUiImage *cursor_image;
 static float ui_width;
 static float ui_height = UI_HEIGHT;
 static float ui_scale = 1.f;
@@ -331,6 +333,36 @@ static void lay_out_all(PRenderTarget *target) {
     states[i].laid_out = false;
 }
 
+#define CURSOR_ICON_SIZE 36.f
+
+void hud_set_cursor(const char *texture) {
+  if (!texture) {
+    cursor_image = NULL;
+    return;
+  }
+
+  char path[512];
+  snprintf(path, sizeof(path), "%s/%s", texture_directory, texture);
+  cursor_image = pe_ui_image(path);
+}
+
+//what the pointer carries, centred on it and over everything
+static void draw_cursor_icon() {
+  if (!cursor_image)
+    return;
+
+  float size = CURSOR_ICON_SIZE * ui_scale;
+  PUiQuad quad = {.image = cursor_image,
+                  .x = pointer_x - size * 0.5f,
+                  .y = pointer_y - size * 0.5f,
+                  .width = size,
+                  .height = size,
+                  .u1 = 1.f,
+                  .v1 = 1.f,
+                  .color = {1.f, 1.f, 1.f, 1.f}};
+  pe_ui_quad(&quad);
+}
+
 void hud_draw_images(PRenderTarget *target, VkCommandBuffer command,
                      uint32_t image_index) {
   lay_out_all(target);
@@ -346,6 +378,7 @@ void hud_draw_images(PRenderTarget *target, VkCommandBuffer command,
     else if (ui_nodes[node].kind == UI_BARFILL)
       draw_bar_fill(node);
   }
+  draw_cursor_icon();
   pe_ui_end();
 }
 
@@ -431,6 +464,8 @@ HudClick hud_update_mouse(float mouse_x, float mouse_y, bool left_down, bool rig
   bool down[BUTTON_COUNT] = {left_down, right_down};
   HudClick clicked = {NULL, 0};
 
+  pointer_x = mouse_x;
+  pointer_y = mouse_y;
   hovered_node = node_under(x, y);
 
   for (int button = 0; button < BUTTON_COUNT; button++) {

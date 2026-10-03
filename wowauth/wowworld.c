@@ -22,6 +22,7 @@
 #define OP_SMSG_ACTION_BUTTONS 0x129
 #define OP_CMSG_CAST_SPELL 0x12E
 #define OP_CMSG_USE_ITEM 0xAB
+#define OP_CMSG_SWAP_ITEM 0x10C
 #define OP_CMSG_AUTOEQUIP_ITEM 0x10A
 #define OP_SMSG_DESTROY_OBJECT 0xAA
 #define OP_CMSG_ITEM_QUERY_SINGLE 86
@@ -521,4 +522,15 @@ bool pe_wowworld_autoequip_item(PWowWorld *world, u8 bag_index, u8 slot) {
   wbuf_u8(&buf, bag_index);
   wbuf_u8(&buf, slot);
   return pe_wowworld_send_packet(world, OP_CMSG_AUTOEQUIP_ITEM, buf.data, buf.len);
+}
+
+//CMSG_SWAP_ITEM: destination bag and slot, then the source's; an empty
+//destination takes the item, a full one trades places with it
+bool pe_wowworld_swap_item(PWowWorld *world, u8 dst_bag, u8 dst_slot, u8 src_bag, u8 src_slot) {
+  WBuf buf = {0};
+  wbuf_u8(&buf, dst_bag);
+  wbuf_u8(&buf, dst_slot);
+  wbuf_u8(&buf, src_bag);
+  wbuf_u8(&buf, src_slot);
+  return pe_wowworld_send_packet(world, OP_CMSG_SWAP_ITEM, buf.data, buf.len);
 }
