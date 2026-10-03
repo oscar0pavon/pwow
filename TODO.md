@@ -73,17 +73,20 @@ history, credentials and file:line references behind these items.
      this pre-WotLK wire), not a guess - `pe_wowobject_handle_monster_move()`
      was already parsing that flags word for the Catmull-Rom/cyclic bits and
      throwing the rest away.
-3. Humanoid NPCs (most of what's actually near Camp Narache - the Tauren
-   quest-givers) still render as nothing: their `CreatureDisplayInfo` row
-   points at `CreatureDisplayInfoExtra` (race/gender/skin/face/hair/
-   equipment) and names no texture of its own, confirmed their
-   `CreatureModelData.modelName` is literally `Character\Tauren\Male\
-   TaurenMale.mdx`/`Female\...` - the same models the player uses. Extending
-   the player's character pipeline to also drive NPCs from
-   `CreatureDisplayInfoExtra` would cover them, but needs per-NPC skin/face/
-   hair resolution and likely new race/gender model conversions beyond the
-   one Tauren-male model that exists today - a separate, much bigger feature,
-   deliberately out of scope for item 2.
+3. **Partly done**: humanoid NPCs. A creature whose `CreatureDisplayInfo`
+   row points at `CreatureDisplayInfoExtra` (race/gender/skin/face/hair/
+   equipment) is dressed through `equipment.c` exactly like the player:
+   `creatures.c`'s `resolve_humanoid()` reads the row's skin, face, hair
+   style and colour and the ItemDisplayInfo ids of its helm, shirt, chest,
+   belt, legs, boots, wrists, gloves and tabard (shoulders have no rule yet),
+   once per display id. Equipment rewrites a model's geosets and texture in
+   place, so each humanoid loads its own model and skin
+   (`create_humanoid_instance()`) instead of sharing a template's buffers.
+   Tauren males and females are drawn (all 18 humanoid kinds at Camp
+   Narache): `PAppearance.sex` picks the model, the `CharSections.dbc` rows
+   (a female's underwear also has a torso layer) and the `_f` spelling of an
+   item's textures. Any other race is tracked and skipped. Not done: the
+   other races, shoulders, helms as models and weapons.
 4. **Done**: right mouse button now turns the character to face wherever the
    camera looks, and releasing it lets J/L turn the character and camera
    together, instead of the two staying fully independent — WoWee's
