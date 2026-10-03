@@ -100,8 +100,51 @@ history, credentials and file:line references behind these items.
 5. Character creation (`CMSG_CHAR_CREATE`) isn't ported — the one test
    character was made with the real WoWee client. Only needed if pwow should
    be able to create a character itself.
-6. Everything else of WoWee's `game/` module (chat, spells, quests, inventory,
-   transports) is out of scope until something above needs it.
+6. **Partly done**: the interface (see "Interface" below) now covers spells
+   (the action bar), inventory (bags, money) and the player's own stats.
+   Still out of scope until something needs it: chat, quests, trading, the
+   bank, transports, groups, combat results.
+
+## Interface
+
+**Done**: the game's own frames, from FrameXML, without Lua (CLAUDE.md's "The
+interface (HUD)" has how). `tools/xml2ui.c` turns the XML into a C table,
+`hud.c` lays it out and draws it through pengine's new `ui.c` (alpha and
+additive blended textured quads), and the Lua that fills it in is ported to C
+where a frame needs it: the player frame (health, power in its colour, level),
+the XP bar, the main action bar (spell icons, stance pages, hotkeys, casting by
+click or the keys 1 to 0), the backpack and the four bags (`ContainerFrame.lua`
+ported: frame generation, anchoring, toggling with the bag buttons or B),
+items with counts, use and equip by right click, picking up and swapping by
+left click, the money frame, and tooltips for spells, items and bags. The
+inventory side is `wowauth/wowinventory.c`.
+
+Not done, roughly in the order they would be wanted:
+
+1. **Targeting.** Nothing selects a creature: no click or Tab target, no
+   `CMSG_SET_SELECTION`, so the target frame is hidden, Attack does nothing and
+   a spell that needs a target fails on the server. `PWowCreature.stats`
+   already keeps every creature's health, level and power for the frame.
+2. **Cursor item corners**: splitting a stack (the dialog), dropping an item on
+   a bag button to equip a bag, on the paper doll, on the ground to destroy it;
+   selling to a vendor.
+3. **Tooltip detail**: stats, damage, armor, binding, durability, price and the
+   description. The item template parse stops after the container slots;
+   spells need their description with its `$s1` tokens filled in.
+4. **The portrait** of the player and target frames (a model rendered into the
+   circle), pet and party frames, buff and debuff slots with the auras'
+   icons.
+5. **Item and macro slots on the action bar**, and the `-` and `=` keys (the
+   engine's `Input` has no key for them).
+6. **The rest of the main bar**: the micro buttons, the performance bar, the
+   key ring, and the chat frame; the paper doll, spellbook and quest log are
+   whole windows.
+7. **Text sizes.** pfonts' Vulkan backend has one atlas, so every label is one
+   size (`HUD_FONT_SIZE`), not the XML's font heights. Several sizes need a
+   change in pfonts.
+8. **Texture quality**: the pushed and highlight textures of a button are
+   faint, as the data has them; nothing was compared against a real client
+   screenshot beyond by eye.
 
 ## Text / HUD
 
@@ -115,8 +158,9 @@ see `pfonts`'s own CLAUDE.md for the Vulkan backend's design and gotchas
 (atlas upload has to happen outside the render pass; the pipeline's sample
 count has to match the host's render pass's). This is the foundation for:
 
-1. Nameplates/name-and-health text over entities, once item 1 of Live
-   client above lands and there is something to label.
+1. Nameplates/name-and-health text over entities: item 1 of Live client has
+   landed, and creatures carry their health and level, so this only needs
+   drawing. See "Interface" for the frames.
 2. Anything else that wants on-screen text - an FPS counter, a chat line,
    debug readouts - can now call `pe_text_draw()` from inside
    `pwow_draw_scene` without new engine work.
