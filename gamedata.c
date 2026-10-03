@@ -20,10 +20,10 @@ static const char *setting(const char *name, const char *fallback) {
   return value ? value : fallback;
 }
 
-//creates path and every missing parent directory, tolerating "already exists"
-static void make_directories(const char *path) {
+//creates every missing directory above file, tolerating "already exists"
+static void make_parent_directories(const char *file) {
   char buf[512];
-  snprintf(buf, sizeof(buf), "%s", path);
+  snprintf(buf, sizeof(buf), "%s", file);
   for (char *p = buf + 1; *p; p++) {
     if (*p == '/') {
       *p = '\0';
@@ -31,7 +31,6 @@ static void make_directories(const char *path) {
       *p = '/';
     }
   }
-  mkdir(buf, 0755);
 }
 
 static bool copy_file(const char *from, const char *to) {
@@ -88,7 +87,7 @@ bool gamedata_ensure_png(const char *base) {
 
   char dest_blp[512];
   snprintf(dest_blp, sizeof(dest_blp), "data/%s.blp", base);
-  make_directories(dest_blp);
+  make_parent_directories(dest_blp);
   if (!copy_file(source_blp, dest_blp))
     return false;
 
