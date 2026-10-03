@@ -30,6 +30,7 @@ typedef struct NodeState {
 } NodeState;
 
 static NodeState states[512];
+static char texture_directory[256];
 static float ui_width;
 static float ui_height = UI_HEIGHT;
 static float ui_scale = 1.f;
@@ -41,7 +42,8 @@ static int find_node(const char *name) {
   return -1;
 }
 
-int hud_init(const char *texture_directory) {
+int hud_init(const char *directory) {
+  snprintf(texture_directory, sizeof(texture_directory), "%s", directory);
   for (int i = 0; i < ui_node_count; i++) {
     states[i].shown = !ui_nodes[i].hidden;
     states[i].fraction = 1.f;
@@ -67,6 +69,18 @@ void hud_show_prefixed(const char *prefix, bool shown) {
   for (int i = 0; i < ui_node_count; i++)
     if (strncmp(ui_nodes[i].name, prefix, length) == 0)
       states[i].shown = shown;
+}
+
+void hud_set_texture(const char *name, const char *texture) {
+  int node = find_node(name);
+  if (node < 0)
+    return;
+
+  char path[512];
+  snprintf(path, sizeof(path), "%s/%s", texture_directory, texture);
+  PUiImage *image = pe_ui_image(path);
+  if (image)
+    states[node].image = image;
 }
 
 void hud_set_text(const char *name, const char *text) {
@@ -228,6 +242,10 @@ static void draw_text(int node) {
   Rect rect = lay_out(node);
   float width = pe_text_width(state->text);
   float x = (rect.left + rect.width * 0.5f) * ui_scale - width * 0.5f;
+  if (def->justify == UI_JUSTIFY_LEFT)
+    x = rect.left * ui_scale;
+  else if (def->justify == UI_JUSTIFY_RIGHT)
+    x = (rect.left + rect.width) * ui_scale - width;
   float y = (ui_height - rect.bottom - rect.height * 0.5f) * ui_scale +
             (pe_text_ascent() - pe_text_cell_height() * 0.5f);
 

@@ -29,6 +29,12 @@ typedef enum UiPoint {
 #define UI_SCREEN (-1)
 #define UI_MAX_ANCHORS 3
 
+typedef enum UiJustify {
+  UI_JUSTIFY_CENTER,
+  UI_JUSTIFY_LEFT,
+  UI_JUSTIFY_RIGHT,
+} UiJustify;
+
 typedef struct UiAnchorDef {
   UiPoint point;
   int relative;
@@ -52,6 +58,7 @@ typedef struct UiNodeDef {
   float tex_coords[4];
   float color[4];
   float font_size;
+  UiJustify justify;
 } UiNodeDef;
 
 extern const UiNodeDef ui_nodes[];

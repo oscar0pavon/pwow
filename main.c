@@ -637,6 +637,22 @@ static void pwow_draw_scene(PRenderTarget *target, VkCommandBuffer *command,
   pe_text_end();
 }
 
+#define ACTION_BUTTONS 12
+
+static const char *const action_hotkeys[ACTION_BUTTONS] = {
+    "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "-", "="};
+
+static void init_action_bar() {
+  char name[64];
+
+  for (int i = 0; i < ACTION_BUTTONS; i++) {
+    snprintf(name, sizeof(name), "ActionButton%dHotKey", i + 1);
+    hud_set_text(name, action_hotkeys[i]);
+    snprintf(name, sizeof(name), "ActionButton%dNormalTexture", i + 1);
+    hud_set_texture(name, "interface/buttons/ui-quickslot.png");
+  }
+}
+
 static void pwow_init() {
   if (!pe_text_init(HUD_FONT_PATH, HUD_FONT_SIZE))
     LOG("pwow: can't load HUD font %s\n", HUD_FONT_PATH);
@@ -651,6 +667,8 @@ static void pwow_init() {
   hud_show_prefixed("TargetFrameDebuff", false);
   hud_show("TargetHighLevelTexture", false);
   hud_show("TargetFrame", false);
+  init_action_bar();
+  hud_set_bar("MainMenuExpBar", 0.f, NULL);
   hud_set_text("TargetName", "Target");
   hud_set_bar("TargetFrameHealthBar", 0.6f, (float[]){0.f, 1.f, 0.f});
 

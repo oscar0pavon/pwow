@@ -14,6 +14,8 @@ int hud_init(const char *texture_directory);
 void hud_show(const char *name, bool shown);
 //every node whose name starts with prefix, for the buff slots and the like
 void hud_show_prefixed(const char *prefix, bool shown);
+//a texture of a node, for what Lua swaps at run time
+void hud_set_texture(const char *name, const char *texture);
 void hud_set_text(const char *name, const char *text);
 
 //fraction of a status bar that is filled, 0 to 1, and its colour

@@ -8,7 +8,13 @@ BLP_CONVERT=${BLP_CONVERT:-/root/sources/WoWee/build/bin/blp_convert}
 here=$(cd "$(dirname "$0")" && pwd)
 out=$here/data
 
-"$here/xml2ui" "$GAME_DATA" "$here/ui_frames.c" PlayerFrame TargetFrame 2>/dev/null |
+#what the game's Lua picks and the XML does not name
+extra_textures="interface/buttons/ui-quickslot.png"
+
+{
+  for png in $extra_textures; do echo "texture $png"; done
+  "$here/xml2ui" "$GAME_DATA" "$here/ui_frames.c" PlayerFrame TargetFrame MainMenuBar $(seq -f ActionButton%g 1 12) 2>/dev/null
+} |
   while read -r kind png; do
     [ "$kind" = texture ] || continue
     [ -f "$out/$png" ] && continue

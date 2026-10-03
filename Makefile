@@ -56,7 +56,7 @@ xml2ui: tools/xml2ui.c ui_layout.h
 #INFO the layout comes from the user's own FrameXML, so the table is generated
 #here and not committed, like data/
 GAME_DATA ?= /root/sources/WoWee/Data/expansions/classic
-UI_FRAMES := PlayerFrame TargetFrame
+UI_FRAMES := PlayerFrame TargetFrame MainMenuBar $(shell seq -f ActionButton%g 1 12)
 
 ui_frames.c: xml2ui
 	./xml2ui $(GAME_DATA) $@ $(UI_FRAMES) > /dev/null

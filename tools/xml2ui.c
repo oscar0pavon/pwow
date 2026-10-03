@@ -344,6 +344,15 @@ static void texture_path(const char *file, char **out) {
   *out = copy(path);
 }
 
+static UiJustify justification(const Contributors *c) {
+  const char *name = effective_attribute(c, "justifyH");
+  if (name && strcmp(name, "LEFT") == 0)
+    return UI_JUSTIFY_LEFT;
+  if (name && strcmp(name, "RIGHT") == 0)
+    return UI_JUSTIFY_RIGHT;
+  return UI_JUSTIFY_CENTER;
+}
+
 static float font_height(const Contributors *c) {
   const char *font_name = effective_attribute(c, "inherits");
   const Element *template = font_name ? find_template(font_name) : NULL;
@@ -369,7 +378,9 @@ static int layer_rank(const char *name) {
 
 static void add_region(const Element *element, int frame_node, int layer,
                        const char *frame_name) {
-  bool is_texture = strcmp(element->tag, "Texture") == 0;
+  size_t tag_length = strlen(element->tag);
+  bool is_texture = tag_length >= 7 &&
+                    strcmp(element->tag + tag_length - 7, "Texture") == 0;
 
   Contributors c = {0};
   gather(element, &c);
@@ -404,6 +415,7 @@ static void add_region(const Element *element, int frame_node, int layer,
     }
   } else {
     def->font_size = font_height(&c);
+    def->justify = justification(&c);
   }
 
   read_color(effective_child(&c, "Color"), def->color, &def->has_color);
@@ -477,6 +489,10 @@ static void add_frame(const Element *element, int parent, const char *parent_nam
       add_layers(layers, node, name);
   }
 
+  const Element *normal = effective_child(&c, "NormalTexture");
+  if (normal)
+    add_region(normal, node, 2, name);
+
   const Element *bar_texture = bar ? effective_child(&c, "BarTexture") : NULL;
   if (bar_texture) {
     int fill = new_node(UI_BARFILL, node, "");
@@ -496,6 +512,32 @@ static void add_frame(const Element *element, int parent, const char *parent_nam
       if (is_frame_tag(children->children[j]->tag))
         add_frame(children->children[j], node, name, strata, level);
   }
+}
+
+static int find_node(const char *name);
+
+//a frame the XML hangs under a parent of another file: its own parent
+//attribute names a frame that was added before it
+static void add_top_level_frame(const Element *element) {
+  const char *parent_name = attribute(element, "parent");
+  int parent = parent_name && strcmp(parent_name, "UIParent") != 0
+                   ? find_node(parent_name)
+                   : UI_SCREEN;
+  if (parent == -2) {
+    fprintf(stderr, "xml2ui: %s needs %s added first\n",
+            attribute(element, "name"), parent_name);
+    exit(1);
+  }
+
+  int strata = 3, level = 0;
+  for (int i = 0; parent != UI_SCREEN && i < frame_count; i++)
+    if (frames[i].node == parent) {
+      strata = frames[i].strata;
+      level = frames[i].level;
+    }
+
+  add_frame(element, parent, parent == UI_SCREEN ? "" : node_names[parent],
+            strata, level);
 }
 
 static int find_node(const char *name) {
@@ -579,7 +621,7 @@ static void write_node(FILE *out, int index) {
   write_floats(out, n->color, 4);
   fputs("}, ", out);
   write_float(out, n->font_size);
-  fputs("},\n", out);
+  fprintf(out, ", %d},\n", n->justify);
 }
 
 static int compare_regions(const void *a, const void *b) {
@@ -636,7 +678,7 @@ int main(int argc, char **argv) {
         const char *name = attribute(root->children[j], "name");
         if (name && strcmp(name, argv[i]) == 0 &&
             !is_true(attribute(root->children[j], "virtual"))) {
-          add_frame(root->children[j], UI_SCREEN, "", 3, 0);
+          add_top_level_frame(root->children[j]);
           found = true;
           break;
         }
