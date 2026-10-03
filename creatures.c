@@ -584,8 +584,9 @@ void creatures_sync(const PWowObjectState *npc_state) {
       play_animation_by_name(&inst->skin, target, true);
     }
 
-    //translate, turn to face (o is already radians off the wire, unlike
-    //pwow's own live-character facing which is tracked in degrees), then
+    //translate, turn to face (o is radians in the game's axes, X north and Y
+    //west, where pwow's world has Y east: the mirror reverses which way a
+    //turn goes, so the angle is negated here), then
     //undo m22gltf's -90-about-X Z-up-to-Y-up export bake - same
     //composition player_place() uses, and for the same reason: the facing
     //turn has to happen before the up-axis fix, not after. z is nudged up
@@ -596,7 +597,7 @@ void creatures_sync(const PWowObjectState *npc_state) {
     float render_z = creature->z + creature_instances[slot].foot_offset;
     glm_mat4_identity(instance->model_mat);
     glm_translate(instance->model_mat, (vec3){creature->x, creature->y, render_z});
-    glm_rotate(instance->model_mat, creature->o, (vec3){0, 0, 1});
+    glm_rotate(instance->model_mat, -creature->o, (vec3){0, 0, 1});
     glm_rotate(instance->model_mat, glm_rad(90.0f), (vec3){1, 0, 0});
     glm_vec3_copy((vec3){creature->x, creature->y, render_z}, instance->position);
   }

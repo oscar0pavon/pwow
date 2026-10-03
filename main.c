@@ -916,11 +916,12 @@ static void live_login(const char *host, int port, const char *account,
   map = login_map;
 
   //game data is X north, Y west; pwow's world is X north, Y east
-  //(pe_terrain_point_y makes the same flip for terrain read from disk)
+  //(pe_terrain_point_y makes the same flip for terrain read from disk).
+  //the mirror reverses which way a turn goes, so the facing is negated too
   start_x = login.x;
   start_y = -login.y;
   live_player_z = login.z;
-  live_player_facing_degrees = glm_deg(login.o);
+  live_player_facing_degrees = -glm_deg(login.o);
 
   //inverse of read_start_tile()'s own formula: world x comes from tile_y
   //(rows run north-south) and world y from tile_x (columns run east-west),
