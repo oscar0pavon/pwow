@@ -30,6 +30,10 @@
 #include "input.h"
 
 #define PLAYER_MODEL_PATH "data/character/tauren/male/taurenmale.glb"
+
+//the display a Tauren male is born with, whose size (1.35) the character is
+//drawn at
+#define PLAYER_DISPLAY_ID 59
 #define PLAYER_ANIMATION "Stand"
 
 //stands in for the skin, face, hair style and hair colour SMSG_UPDATE_OBJECT
@@ -155,25 +159,64 @@ static PlayerEquipSlot player_equip_slots[PE_WOWOBJECT_PLAYER_EQUIP_SLOTS];
 static PAttachmentPoints player_points;
 
 //one weapon or shield in a hand slot, carried at sheathed until the character
-//attacks and then held at drawn
+//attacks and then held at drawn. turned by sheathed_local when carried
 typedef struct PlayerHeldItem {
   PAttachedItem attached;
   PAttachmentPoint drawn, sheathed;
+  mat4 sheathed_local;
 } PlayerHeldItem;
 
 static PlayerHeldItem player_held[ATTACHED_ITEMS_MAX];
 static int player_held_count;
 static bool player_weapons_drawn;
 
-//a shield and a two handed weapon ride on the back, the main hand's other
-//weapons on the right hip and the off hand's on the left
+//a two handed weapon rides on the back, the other weapons on the right hip
+//(main hand) or the left (off hand), and a shield stays on its arm: the
+//client's own places, as WoWee's weaponAttachment() has them
 static u32 sheath_point_of(int slot, u32 inventory_type) {
   if (inventory_type == INVTYPE_SHIELD)
-    return ATTACHMENT_SHEATH_SHIELD;
+    return ATTACHMENT_SHIELD;
   if (inventory_type == INVTYPE_2HWEAPON)
-    return ATTACHMENT_LARGE_WEAPON_RIGHT;
-  return slot == PLAYER_SLOT_MAIN_HAND ? ATTACHMENT_HIP_WEAPON_RIGHT
-                                       : ATTACHMENT_HIP_WEAPON_LEFT;
+    return ATTACHMENT_BACK;
+  return slot == PLAYER_SLOT_MAIN_HAND ? ATTACHMENT_HIP_RIGHT
+                                       : ATTACHMENT_HIP_LEFT;
+}
+
+//how a carried weapon is turned at its point, from WoWee's
+//weaponLocalTransform(), tuned there against the real client. a weapon model
+//is long along its own X, which is the character's front to back: a hip one
+//is turned to point down along the leg, a big one stood up and canted across
+//the back. those turns are in the model's own axes, and the glb's are turned
+//a quarter about X from them (m22gltf's remap), so they are carried over
+static void sheathed_local_of(u32 inventory_type, mat4 out) {
+  glm_mat4_identity(out);
+  if (inventory_type == INVTYPE_SHIELD)
+    return;
+
+  if (inventory_type == INVTYPE_2HWEAPON) {
+    //TEMPORARY tuning knobs: PWOW_SHEATH_2H="tx ty tz cant scale" replaces the
+    //offset in the attachment's own axes, the cant in degrees and the size
+    float tx = -0.03f, ty = -0.10f, tz = 0.0f, cant = 33.0f, scale = 1.0f;
+    const char *tuning = getenv("PWOW_SHEATH_2H");
+    if (tuning)
+      sscanf(tuning, "%f %f %f %f %f", &tx, &ty, &tz, &cant, &scale);
+
+    glm_translate(out, (vec3){tx, ty, tz});
+    glm_rotate(out, glm_rad(cant), (vec3){1, 0, 0});
+    glm_rotate(out, glm_rad(90.0f), (vec3){0, 1, 0});
+    glm_rotate(out, glm_rad(90.0f), (vec3){1, 0, 0});
+    glm_scale_uni(out, scale);
+  } else {
+    glm_rotate(out, glm_rad(90.0f), (vec3){0, 1, 0});
+  }
+
+  mat4 remap, remap_inverse, carried;
+  glm_mat4_identity(remap);
+  glm_rotate(remap, glm_rad(-90.0f), (vec3){1, 0, 0});
+  glm_mat4_identity(remap_inverse);
+  glm_rotate(remap_inverse, glm_rad(90.0f), (vec3){1, 0, 0});
+  glm_mat4_mul(remap, out, carried);
+  glm_mat4_mul(carried, remap_inverse, out);
 }
 
 //the main hand's item goes in the right hand, the off hand's in the left, or on
@@ -202,6 +245,7 @@ static void sync_player_held_items() {
     const PAttachmentPoint *sheathed = attachment_points_find(
         &player_points, sheath_point_of(slot, equip->info.inventory_type));
     held->sheathed = sheathed ? *sheathed : held->drawn;
+    sheathed_local_of(equip->info.inventory_type, held->sheathed_local);
     player_held_count++;
   }
 }
@@ -450,8 +494,12 @@ static void player_load() {
 #define PLAYER_FOOT_OFFSET 0.011f
 
 static void player_place(vec3 position, float facing_degrees) {
+  static float scale;
+  if (scale == 0.0f)
+    scale = creatures_display_scale(PLAYER_DISPLAY_ID);
+
   vec3 render_position = {position[0], position[1],
-                          position[2] + PLAYER_FOOT_OFFSET};
+                          position[2] + PLAYER_FOOT_OFFSET * scale};
   glm_mat4_identity(player_model.model_mat);
   glm_translate(player_model.model_mat, render_position);
   glm_rotate(player_model.model_mat, glm_rad(facing_degrees), (vec3){0, 0, 1});
@@ -460,6 +508,7 @@ static void player_place(vec3 position, float facing_degrees) {
   //axis that carries left and right, or the character is its own mirror image
   //and what it holds is in the wrong hand (see creatures_sync())
   glm_scale(player_model.model_mat, (vec3){1, 1, -1});
+  glm_scale_uni(player_model.model_mat, scale);
   glm_vec3_copy(position, player_model.position);
 }
 
@@ -490,6 +539,10 @@ static void player_draw(VkCommandBuffer *command, uint32_t image_index) {
   for (int i = 0; i < player_held_count; i++) {
     PlayerHeldItem *held = &player_held[i];
     held->attached.point = player_weapons_drawn ? held->drawn : held->sheathed;
+    if (player_weapons_drawn)
+      glm_mat4_identity(held->attached.local);
+    else
+      glm_mat4_copy(held->sheathed_local, held->attached.local);
     attached_item_draw(&held->attached, &player_skin, player_model.model_mat,
                        command, image_index, main_camera.view,
                        main_camera.projection);
