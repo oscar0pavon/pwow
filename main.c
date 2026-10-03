@@ -36,6 +36,7 @@
 #include "input.h"
 #include "questmarks.h"
 #include "questwindow.h"
+#include "selection.h"
 #include "targeting.h"
 
 #define PLAYER_MODEL_PATH "data/character/tauren/male/taurenmale.glb"
@@ -136,6 +137,9 @@ static float live_player_facing_degrees;
 //creature spawns ever reach pwow
 static PWowWorld world_conn;
 static PWowObjectState npc_state;
+
+//the creature the player has chosen, 0 for none
+static u64 selected_target;
 
 //the character's own position/facing in live mode, updated every frame by
 //input; the orbit camera that follows it
@@ -640,6 +644,9 @@ static void pwow_draw_scene(PRenderTarget *target, VkCommandBuffer *command,
   player_draw(command, image_index);
   if (live_mode)
     creatures_draw(command, image_index, main_camera.view, main_camera.projection);
+  if (live_mode)
+    selection_draw_ring(&npc_state, selected_target, &world, main_camera.view,
+                        main_camera.projection, *command, image_index);
 
   char hud_line[128];
   snprintf(hud_line, sizeof(hud_line), "%s  (%.0f, %.0f, %.0f)", map,
@@ -675,7 +682,7 @@ static void pwow_init() {
   if (!pe_text_init(HUD_FONT_PATH, HUD_FONT_SIZE))
     LOG("pwow: can't load HUD font %s\n", HUD_FONT_PATH);
 
-  if (!pe_ui_init() || !hud_init(DATA_DIRECTORY))
+  if (!pe_ui_init() || !hud_init(DATA_DIRECTORY) || !selection_init())
     LOG("pwow: can't start the interface\n");
   hud_set_text("PlayerName", player_name);
   hud_set_bar("PlayerFrameHealthBar", 1.f, (float[]){0.f, 1.f, 0.f});
@@ -1068,8 +1075,6 @@ static void update_live_character(float seconds) {
 
 static const float ERROR_COLOR[3] = {1.0f, 0.1f, 0.1f};
 
-static u64 selected_target;
-
 typedef struct WorldPress {
   bool down;
   bool in_world;
@@ -1148,6 +1153,7 @@ static void update_canvas() {
     selected_target = 0;
 
   hud_canvas_clear();
+  selection_label(&npc_state, selected_target, main_camera.view, main_camera.projection);
   questmarks_update(&npc_state, main_camera.view, main_camera.projection, player_position);
   quest_window_update(&npc_state, player_position);
 }

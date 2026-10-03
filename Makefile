@@ -13,7 +13,7 @@ WOWAUTH_LIBRARIES := /usr/lib/libcrypto.so
 #INFO wowobject.c decompresses SMSG_COMPRESSED_UPDATE_OBJECT with zlib
 WOWAUTH_LIBRARIES += -lz
 
-pwow_src := main.c camera.c input.c creatures.c equipment.c gamedata.c attached.c hud.c actionbar.c bags.c tooltip.c targeting.c questmarks.c questwindow.c ui_frames.c
+pwow_src := main.c camera.c input.c creatures.c equipment.c gamedata.c attached.c hud.c actionbar.c bags.c tooltip.c targeting.c questmarks.c questwindow.c selection.c ui_frames.c
 
 wowauth_src := $(wildcard wowauth/*.c)
 wowauth_objs := $(wowauth_src:%.c=%.o)

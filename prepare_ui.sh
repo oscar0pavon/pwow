@@ -30,6 +30,7 @@ extra_textures="interface/buttons/ui-quickslot.png
   interface/questframe/ui-questitemnameframe.png
   interface/questframe/ui-questtitlehighlight.png
   interface/questframe/ui-questitemhighlight.png
+  spells/whiteringthin128.png
   interface/moneyframe/ui-moneyicons.png
   interface/gossipframe/availablequesticon.png
   interface/gossipframe/activequesticon.png
