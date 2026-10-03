@@ -355,12 +355,10 @@ static bool walking;
 static float yaw = GLM_PI;
 static float pitch = -0.2f;
 
-//the cursor position at the start of the current drag, and
-//whether one is in progress - reset on button-up so the next press starts
-//from wherever the cursor lands rather than jumping from the last drag's end.
-//either button drags the camera; only the right one also turns the character
-static float mouse_look_x;
-static float mouse_look_y;
+//whether a drag is in progress. the pointer is locked for its length, so
+//the cursor can not leave the window and rests where the drag began; the
+//motion comes as mouse.dx/dy. either button drags the camera; only the right
+//one also turns the character
 static bool mouse_look_active;
 
 //dx/dy in screen pixels since the last call, while either button is held;
@@ -368,6 +366,8 @@ static bool mouse_look_active;
 //since only one runs per frame
 static bool mouse_look_delta(float *dx, float *dy) {
   if (!mouse.left.pressed && !mouse.right.pressed) {
+    if (mouse_look_active)
+      pe_wm_unlock_pointer();
     mouse_look_active = false;
     return false;
   }
@@ -376,15 +376,16 @@ static bool mouse_look_delta(float *dx, float *dy) {
     return false;
 
   if (!mouse_look_active) {
-    mouse_look_x = mouse.x;
-    mouse_look_y = mouse.y;
+    pe_wm_lock_pointer();
+    mouse.dx = 0;
+    mouse.dy = 0;
     mouse_look_active = true;
   }
 
-  *dx = mouse.x - mouse_look_x;
-  *dy = mouse.y - mouse_look_y;
-  mouse_look_x = mouse.x;
-  mouse_look_y = mouse.y;
+  *dx = mouse.dx;
+  *dy = mouse.dy;
+  mouse.dx = 0;
+  mouse.dy = 0;
   return true;
 }
 
