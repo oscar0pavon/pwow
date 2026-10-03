@@ -15,7 +15,11 @@
 
 //where a body's gear rides: one of the points m22gltf writes to <model>.att,
 //the joint it follows and a position in the glb's own axes. the ids are the
-//game's: 1 and 2 the hands, 5 and 6 the shoulders, 11 the helm
+//game's: 0 the arm a shield is worn on, 1 and 2 the hands, 5 and 6 the
+//shoulders, 11 the helm
+#define ATTACHMENT_SHIELD 0
+#define ATTACHMENT_RIGHT_HAND 1
+#define ATTACHMENT_LEFT_HAND 2
 #define ATTACHMENT_HELM 11
 
 typedef struct PAttachmentPoint {

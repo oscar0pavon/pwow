@@ -44,6 +44,12 @@
 
 #define TAUREN_RACE_ID 6
 
+//the hands of PWowVirtualItems, and what a held item's class and subclass say
+//about it (vmangos's ItemPrototype.h)
+#define ATTACHED_HANDS 2
+#define ITEM_CLASS_ARMOR 4
+#define ITEM_SUBCLASS_SHIELD 6
+
 
 #define CREATURE_MODEL_FIELD_ID 0
 #define CREATURE_MODEL_FIELD_NAME 2
@@ -400,6 +406,15 @@ static CreatureTemplate *find_or_load_template(const ResolvedDisplay *resolved) 
 //one GPU instance per currently-tracked simple creature
 //---------------------------------------------------------------------------
 
+//a helm, a weapon or a shield on a body: its own model and the point of the
+//body's it follows
+typedef struct AttachedItem {
+  PAttachedModel model;
+  PAttachmentPoint point;
+} AttachedItem;
+
+#define ATTACHED_ITEMS_MAX 4
+
 typedef struct CreatureInstance {
   u64 guid;
   PModel model;
@@ -415,9 +430,8 @@ typedef struct CreatureInstance {
   //a humanoid has its own index buffer and composited texture, which
   //equipment rewrites per creature; a simple creature shares its template's
   bool dressed;
-  PAttachedModel helm;
-  PAttachmentPoint helm_point;
-  bool has_helm;
+  AttachedItem attached[ATTACHED_ITEMS_MAX];
+  int attached_count;
   bool used;
 } CreatureInstance;
 
@@ -447,8 +461,9 @@ static void release_creature_instance(CreatureInstance *inst) {
     vkFreeMemory(vk_device, *memory, NULL);
   }
 
-  if (inst->has_helm)
-    attached_release(&inst->helm);
+  for (int i = 0; i < inst->attached_count; i++)
+    attached_release(&inst->attached[i].model);
+  inst->attached_count = 0;
 
   if (!inst->dressed)
     return;
@@ -521,7 +536,7 @@ static bool create_simple_instance(CreatureInstance *inst,
   inst->clips = template->clips;
   inst->foot_offset = template->foot_offset;
   inst->dressed = false;
-  inst->has_helm = false;
+  inst->attached_count = 0;
   return true;
 }
 
@@ -583,38 +598,69 @@ static void item_component_base(char *out, size_t size, const char *folder,
   snprintf(out, size, "item/objectcomponents/%s/%s%s", folder, lower, suffix);
 }
 
-//draws the helm an item names at the body's head, where the model's own file
-//gives the point. a helm that cannot be converted is simply not drawn
-static void attach_helm(CreatureInstance *inst, const HumanoidTemplate *template,
-                        const ResolvedDisplay *resolved) {
-  const PItemDisplayInfo *helm = NULL;
-  for (int i = 0; i < resolved->item_count; i++)
-    if (resolved->items[i].inventory_type == INVTYPE_HEAD)
-      helm = &resolved->items[i].display;
-  if (!helm || helm->model[0] == '\0' || helm->model_texture[0] == '\0')
+//draws the model an item names at a point of the body, where the body's own
+//file gives the point and the item's the folder its files are in. an item that
+//cannot be converted is simply not drawn
+static void attach_item(CreatureInstance *inst, const HumanoidTemplate *template,
+                        u32 point_id, const char *folder, const char *suffix,
+                        const PItemDisplayInfo *item) {
+  if (inst->attached_count >= ATTACHED_ITEMS_MAX || item->model[0] == '\0' ||
+      item->model_texture[0] == '\0')
     return;
 
   const PAttachmentPoint *point =
-      attachment_points_find(&template->points, ATTACHMENT_HELM);
+      attachment_points_find(&template->points, point_id);
   if (!point)
     return;
 
   char model_base[256], texture_base[256];
-  item_component_base(model_base, sizeof(model_base), "head", helm->model,
-                      ITEM_MODEL_SUFFIXES[resolved->look.sex]);
-  item_component_base(texture_base, sizeof(texture_base), "head",
-                      helm->model_texture, "");
-  if (!gamedata_ensure_model(model_base) || !gamedata_ensure_png(texture_base))
+  item_component_base(model_base, sizeof(model_base), folder, item->model,
+                      suffix);
+  item_component_base(texture_base, sizeof(texture_base), folder,
+                      item->model_texture, "");
+  if (!gamedata_ensure_model(model_base) || !gamedata_ensure_png(texture_base)) {
     return;
+  }
 
   char glb_path[300], texture_path[300];
   snprintf(glb_path, sizeof(glb_path), "data/%s.glb", model_base);
   snprintf(texture_path, sizeof(texture_path), "data/%s.png", texture_base);
-  if (!attached_create(&inst->helm, glb_path, texture_path))
+
+  AttachedItem *attached = &inst->attached[inst->attached_count];
+  if (!attached_create(&attached->model, glb_path, texture_path))
     return;
 
-  inst->helm_point = *point;
-  inst->has_helm = true;
+  attached->point = *point;
+  inst->attached_count++;
+}
+
+//a hand holds what the wire says: the main hand's item in the right hand,
+//the off hand's in the left, or on the arm when it is a shield. the ranged
+//slot is carried on the back and not drawn yet
+static void attach_held(CreatureInstance *inst, const HumanoidTemplate *template,
+                        const PWowVirtualItems *held) {
+  for (int slot = 0; slot < ATTACHED_HANDS; slot++) {
+    PItemDisplayInfo item;
+    if (held->display[slot] == 0 ||
+        !resolve_item_display_info(held->display[slot], &item))
+      continue;
+
+    bool shield = held->item_class[slot] == ITEM_CLASS_ARMOR &&
+                  held->item_subclass[slot] == ITEM_SUBCLASS_SHIELD;
+    u32 point = shield ? ATTACHMENT_SHIELD
+                       : (slot == 0 ? ATTACHMENT_RIGHT_HAND : ATTACHMENT_LEFT_HAND);
+    attach_item(inst, template, point, shield ? "shield" : "weapon", "", &item);
+  }
+}
+
+//the helm of the display's own extra row, at the head
+static void attach_helm(CreatureInstance *inst, const HumanoidTemplate *template,
+                        const ResolvedDisplay *resolved) {
+  for (int i = 0; i < resolved->item_count; i++)
+    if (resolved->items[i].inventory_type == INVTYPE_HEAD)
+      attach_item(inst, template, ATTACHMENT_HELM, "head",
+                  ITEM_MODEL_SUFFIXES[resolved->look.sex],
+                  &resolved->items[i].display);
 }
 
 //an instance of its sex's body, dressed from its CreatureDisplayInfoExtra
@@ -622,7 +668,8 @@ static void attach_helm(CreatureInstance *inst, const HumanoidTemplate *template
 //those two are the instance's own, loaded before they are replaced since
 //apply_equipment_texture() destroys the texture it finds
 static bool create_humanoid_instance(CreatureInstance *inst,
-                                     const ResolvedDisplay *resolved) {
+                                     const ResolvedDisplay *resolved,
+                                     const PWowVirtualItems *held) {
   HumanoidTemplate *template = find_or_load_humanoid_template(resolved->look.sex);
 
   pe_vk_skin_instance(&inst->skin, &template->skin);
@@ -642,8 +689,9 @@ static bool create_humanoid_instance(CreatureInstance *inst,
   inst->clips = template->clips;
   inst->foot_offset = HUMANOID_FOOT_OFFSETS[resolved->look.sex];
   inst->dressed = true;
-  inst->has_helm = false;
+  inst->attached_count = 0;
   attach_helm(inst, template, resolved);
+  attach_held(inst, template, held);
   return true;
 }
 
@@ -677,7 +725,7 @@ void creatures_sync(const PWowObjectState *npc_state) {
 
       CreatureInstance *inst = &creature_instances[slot];
       bool created = resolved->humanoid
-                         ? create_humanoid_instance(inst, resolved)
+                         ? create_humanoid_instance(inst, resolved, &creature->held)
                          : create_simple_instance(inst, resolved);
       if (!created)
         continue;
@@ -716,6 +764,13 @@ void creatures_sync(const PWowObjectState *npc_state) {
     glm_translate(instance->model_mat, (vec3){creature->x, creature->y, render_z});
     glm_rotate(instance->model_mat, -creature->o, (vec3){0, 0, 1});
     glm_rotate(instance->model_mat, glm_rad(90.0f), (vec3){1, 0, 0});
+    //INFO a model's own axes are right handed and pwow's world is left handed,
+    //so drawn as it is a creature is its own mirror image: its left arm on the
+    //viewer's right. m22gltf's axes put the model's left and right along Z, so
+    //reflecting that one axis puts them back, and what is attached to a point
+    //of the body, a shield on the left arm, follows it. nothing here culls
+    //faces, so the reflection's turned winding does no harm
+    glm_scale(instance->model_mat, (vec3){1, 1, -1});
     glm_vec3_copy((vec3){creature->x, creature->y, render_z}, instance->position);
   }
 
@@ -737,14 +792,16 @@ void creatures_draw(VkCommandBuffer *command, uint32_t image_index,
     skinned_model_draw(&inst->model, &inst->skin, command, image_index, view,
                        projection);
 
-    if (!inst->has_helm)
-      continue;
-
-    //the body's placement, then its head as posed this frame, then the helm
-    mat4 attachment;
-    attachment_matrix(&inst->skin, &inst->helm_point, attachment);
-    glm_mat4_mul(inst->model.model_mat, attachment, inst->helm.model.model_mat);
-    skinned_model_draw(&inst->helm.model, &inst->helm.skin, command,
-                       image_index, view, projection);
+    //each item rides on the body's placement, then the joint of its point as
+    //posed this frame, then the offset to the point
+    for (int i = 0; i < inst->attached_count; i++) {
+      AttachedItem *attached = &inst->attached[i];
+      mat4 attachment;
+      attachment_matrix(&inst->skin, &attached->point, attachment);
+      glm_mat4_mul(inst->model.model_mat, attachment,
+                   attached->model.model.model_mat);
+      skinned_model_draw(&attached->model.model, &attached->model.skin, command,
+                         image_index, view, projection);
+    }
   }
 }
