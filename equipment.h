@@ -56,6 +56,8 @@ void resolve_tauren_body(const PAppearance *look, PBodyLayers *out);
 #define INVTYPE_WAIST 6
 #define INVTYPE_LEGS 7
 #define INVTYPE_FEET 8
+#define INVTYPE_SHIELD 14
+#define INVTYPE_2HWEAPON 17
 #define INVTYPE_WRISTS 9
 #define INVTYPE_HANDS 10
 #define INVTYPE_CLOAK 16

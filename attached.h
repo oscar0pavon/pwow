@@ -7,6 +7,8 @@
 #include <engine/renderer/vulkan.h>
 #include <engine/skeletal.h>
 
+#include "equipment.h"
+
 #include <stdbool.h>
 
 //a model drawn apart from a body, at one of its attachment points: a helm, a
@@ -21,6 +23,13 @@
 #define ATTACHMENT_RIGHT_HAND 1
 #define ATTACHMENT_LEFT_HAND 2
 #define ATTACHMENT_HELM 11
+
+//where a weapon or shield is carried while it is not in the hand: on the back
+//for a shield and a big weapon, at the hips for the others
+#define ATTACHMENT_SHEATH_SHIELD 28
+#define ATTACHMENT_LARGE_WEAPON_RIGHT 31
+#define ATTACHMENT_HIP_WEAPON_LEFT 32
+#define ATTACHMENT_HIP_WEAPON_RIGHT 33
 
 typedef struct PAttachmentPoint {
   u32 id, joint;
@@ -65,6 +74,31 @@ bool attached_create(PAttachedModel *out, const char *glb_path,
 
 //gives back what the instance owns, never the mesh it shares
 void attached_release(PAttachedModel *attached);
+
+//an item on a body: its own model and the point of the body's it follows
+typedef struct PAttachedItem {
+  PAttachedModel model;
+  PAttachmentPoint point;
+} PAttachedItem;
+
+#define ATTACHED_ITEMS_MAX 4
+
+//puts the model an item names at one of points, converting its files the first
+//time one is needed. folder is where under item/objectcomponents they are
+//("head", "weapon", "shield") and suffix what the game adds to the model's
+//name for a race and sex ("_tam"), empty for none. false if the body has no
+//such point, the item names no model or its files cannot be had, and then
+//nothing is drawn
+bool attached_item_create(PAttachedItem *out, const PAttachmentPoints *points,
+                          u32 point_id, const char *folder, const char *suffix,
+                          const PItemDisplayInfo *item);
+
+//draws the item on a body placed by body_model_mat and posed in body: the
+//body's placement, then the joint of the point as posed this frame, then the
+//offset to the point
+void attached_item_draw(PAttachedItem *item, const PSkin *body,
+                        mat4 body_model_mat, VkCommandBuffer *command,
+                        uint32_t image_index, mat4 view, mat4 projection);
 
 //draws a skinned model at its model_mat, lit from the usual guessed sun
 void skinned_model_draw(PModel *model, PSkin *skin, VkCommandBuffer *command,

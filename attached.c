@@ -1,5 +1,7 @@
 #include "attached.h"
 
+#include "gamedata.h"
+
 #include <engine/animation/animation.h>
 #include <engine/array.h>
 #include <engine/images.h>
@@ -9,6 +11,7 @@
 #include <engine/renderer/uniform_buffer.h>
 #include <engine/renderer/vk_images.h>
 
+#include <ctype.h>
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
@@ -135,6 +138,65 @@ void attached_release(PAttachedModel *attached) {
   }
 
   pe_vk_clean_image(&attached->model.texture);
+}
+
+//---------------------------------------------------------------------------
+//items on a body
+//---------------------------------------------------------------------------
+
+//"Helm_Leather_A_02.mdx" in folder "head" for a male is the base of its
+//converted files, item/objectcomponents/head/helm_leather_a_02_tam, and a
+//texture's name is the same without the suffix
+static void item_component_base(char *out, size_t size, const char *folder,
+                                const char *name, const char *suffix) {
+  char lower[64];
+  snprintf(lower, sizeof(lower), "%s", name);
+  for (char *c = lower; *c; c++)
+    *c = (char)tolower((unsigned char)*c);
+
+  size_t length = strlen(lower);
+  if (length > 4 && strcmp(lower + length - 4, ".mdx") == 0)
+    lower[length - 4] = '\0';
+
+  snprintf(out, size, "item/objectcomponents/%s/%s%s", folder, lower, suffix);
+}
+
+bool attached_item_create(PAttachedItem *out, const PAttachmentPoints *points,
+                          u32 point_id, const char *folder, const char *suffix,
+                          const PItemDisplayInfo *item) {
+  if (item->model[0] == '\0' || item->model_texture[0] == '\0')
+    return false;
+
+  const PAttachmentPoint *point = attachment_points_find(points, point_id);
+  if (!point)
+    return false;
+
+  char model_base[256], texture_base[256];
+  item_component_base(model_base, sizeof(model_base), folder, item->model,
+                      suffix);
+  item_component_base(texture_base, sizeof(texture_base), folder,
+                      item->model_texture, "");
+  if (!gamedata_ensure_model(model_base) || !gamedata_ensure_png(texture_base))
+    return false;
+
+  char glb_path[300], texture_path[300];
+  snprintf(glb_path, sizeof(glb_path), "data/%s.glb", model_base);
+  snprintf(texture_path, sizeof(texture_path), "data/%s.png", texture_base);
+  if (!attached_create(&out->model, glb_path, texture_path))
+    return false;
+
+  out->point = *point;
+  return true;
+}
+
+void attached_item_draw(PAttachedItem *item, const PSkin *body,
+                        mat4 body_model_mat, VkCommandBuffer *command,
+                        uint32_t image_index, mat4 view, mat4 projection) {
+  mat4 attachment;
+  attachment_matrix(body, &item->point, attachment);
+  glm_mat4_mul(body_model_mat, attachment, item->model.model.model_mat);
+  skinned_model_draw(&item->model.model, &item->model.skin, command,
+                     image_index, view, projection);
 }
 
 //---------------------------------------------------------------------------

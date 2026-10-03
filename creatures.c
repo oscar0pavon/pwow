@@ -18,7 +18,6 @@
 
 #include "attached.h"
 #include "equipment.h"
-#include "gamedata.h"
 
 #include <ctype.h>
 #include <float.h>
@@ -406,15 +405,6 @@ static CreatureTemplate *find_or_load_template(const ResolvedDisplay *resolved) 
 //one GPU instance per currently-tracked simple creature
 //---------------------------------------------------------------------------
 
-//a helm, a weapon or a shield on a body: its own model and the point of the
-//body's it follows
-typedef struct AttachedItem {
-  PAttachedModel model;
-  PAttachmentPoint point;
-} AttachedItem;
-
-#define ATTACHED_ITEMS_MAX 4
-
 typedef struct CreatureInstance {
   u64 guid;
   PModel model;
@@ -430,7 +420,7 @@ typedef struct CreatureInstance {
   //a humanoid has its own index buffer and composited texture, which
   //equipment rewrites per creature; a simple creature shares its template's
   bool dressed;
-  AttachedItem attached[ATTACHED_ITEMS_MAX];
+  PAttachedItem attached[ATTACHED_ITEMS_MAX];
   int attached_count;
   bool used;
 } CreatureInstance;
@@ -582,56 +572,17 @@ static void give_own_index_buffer(PModel *model) {
                                             VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
 }
 
-//"Helm_Leather_A_02.mdx" in folder "head" for a male is the base of its
-//converted files, item/objectcomponents/head/helm_leather_a_02_tam, and a
-//texture's name is the same without the suffix
-static void item_component_base(char *out, size_t size, const char *folder,
-                                const char *name, const char *suffix) {
-  char lower[64];
-  snprintf(lower, sizeof(lower), "%s", name);
-  lowercase(lower);
-
-  size_t length = strlen(lower);
-  if (length > 4 && strcmp(lower + length - 4, ".mdx") == 0)
-    lower[length - 4] = '\0';
-
-  snprintf(out, size, "item/objectcomponents/%s/%s%s", folder, lower, suffix);
-}
-
-//draws the model an item names at a point of the body, where the body's own
-//file gives the point and the item's the folder its files are in. an item that
-//cannot be converted is simply not drawn
+//puts an item at a point of the body, if it can be had: one that cannot is
+//simply not drawn
 static void attach_item(CreatureInstance *inst, const HumanoidTemplate *template,
                         u32 point_id, const char *folder, const char *suffix,
                         const PItemDisplayInfo *item) {
-  if (inst->attached_count >= ATTACHED_ITEMS_MAX || item->model[0] == '\0' ||
-      item->model_texture[0] == '\0')
+  if (inst->attached_count >= ATTACHED_ITEMS_MAX)
     return;
 
-  const PAttachmentPoint *point =
-      attachment_points_find(&template->points, point_id);
-  if (!point)
-    return;
-
-  char model_base[256], texture_base[256];
-  item_component_base(model_base, sizeof(model_base), folder, item->model,
-                      suffix);
-  item_component_base(texture_base, sizeof(texture_base), folder,
-                      item->model_texture, "");
-  if (!gamedata_ensure_model(model_base) || !gamedata_ensure_png(texture_base)) {
-    return;
-  }
-
-  char glb_path[300], texture_path[300];
-  snprintf(glb_path, sizeof(glb_path), "data/%s.glb", model_base);
-  snprintf(texture_path, sizeof(texture_path), "data/%s.png", texture_base);
-
-  AttachedItem *attached = &inst->attached[inst->attached_count];
-  if (!attached_create(&attached->model, glb_path, texture_path))
-    return;
-
-  attached->point = *point;
-  inst->attached_count++;
+  if (attached_item_create(&inst->attached[inst->attached_count],
+                           &template->points, point_id, folder, suffix, item))
+    inst->attached_count++;
 }
 
 //a hand holds what the wire says: the main hand's item in the right hand,
@@ -792,16 +743,8 @@ void creatures_draw(VkCommandBuffer *command, uint32_t image_index,
     skinned_model_draw(&inst->model, &inst->skin, command, image_index, view,
                        projection);
 
-    //each item rides on the body's placement, then the joint of its point as
-    //posed this frame, then the offset to the point
-    for (int i = 0; i < inst->attached_count; i++) {
-      AttachedItem *attached = &inst->attached[i];
-      mat4 attachment;
-      attachment_matrix(&inst->skin, &attached->point, attachment);
-      glm_mat4_mul(inst->model.model_mat, attachment,
-                   attached->model.model.model_mat);
-      skinned_model_draw(&attached->model.model, &attached->model.skin, command,
-                         image_index, view, projection);
-    }
+    for (int i = 0; i < inst->attached_count; i++)
+      attached_item_draw(&inst->attached[i], &inst->skin, inst->model.model_mat,
+                         command, image_index, view, projection);
   }
 }
