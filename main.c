@@ -29,6 +29,7 @@
 #include "creatures.h"
 #include "equipment.h"
 #include "actionbar.h"
+#include "bags.h"
 #include "hud.h"
 #include "input.h"
 
@@ -674,6 +675,8 @@ static void pwow_init() {
   hud_show("TargetHighLevelTexture", false);
   hud_show("TargetFrame", false);
   init_action_bar();
+  if (!bags_init("data/dbc"))
+    LOG("pwow: can't start the bags, run ./prepare_ui.sh\n");
   if (!actionbar_init("data/dbc"))
     LOG("pwow: can't read the spell dbc files, run ./prepare_ui.sh\n");
   hud_set_bar("MainMenuExpBar", 0.f, NULL);
@@ -987,13 +990,23 @@ static void use_action_slot(int slot) {
 }
 
 //ActionButton1 to 12 of the bar, by the click on one
-static void use_clicked_button(const char *name) {
+static void use_clicked_button(HudClick click) {
+  if (live_mode && bags_click(click, &npc_state.inventory, &world_conn))
+    return;
+
   int slot;
-  if (name && sscanf(name, "ActionButton%d", &slot) == 1)
+  if (click.name && click.button == 1 && sscanf(click.name, "ActionButton%d", &slot) == 1)
     use_action_slot(slot);
 }
 
 //the keys 1 to 9 and 0 are slots 1 to 10, acting once as they go down
+static void toggle_bags_key() {
+  static bool was_down;
+  if (input.B.pressed && !was_down && live_mode)
+    bags_toggle_all(&npc_state.inventory);
+  was_down = input.B.pressed;
+}
+
 static void use_action_keys() {
   Key *keys[] = {&input.KEY_1, &input.KEY_2, &input.KEY_3, &input.KEY_4,
                  &input.KEY_5, &input.KEY_6, &input.KEY_7, &input.KEY_8,
@@ -1008,13 +1021,16 @@ static void use_action_keys() {
 }
 
 static void pwow_update() {
-  use_clicked_button(hud_update_mouse(mouse.x, mouse.y, mouse.left.pressed));
+  use_clicked_button(hud_update_mouse(mouse.x, mouse.y, mouse.left.pressed, mouse.right.pressed));
   use_action_keys();
+  toggle_bags_key();
 
   if (live_mode) {
     pe_wowworld_poll(&world_conn, &npc_state);
     hud_update_player(&npc_state);
+    pe_wowworld_request_item_templates(&world_conn, &npc_state);
     actionbar_update(&npc_state);
+    bags_update(&npc_state.inventory);
     sync_player_equipment();
     pe_wowobject_state_tick(&npc_state, delta_time);
     creatures_sync(&npc_state);

@@ -9,11 +9,14 @@ here=$(cd "$(dirname "$0")" && pwd)
 out=$here/data
 
 #what the game's Lua picks and the XML does not name
-extra_textures="interface/buttons/ui-quickslot.png"
+extra_textures="interface/buttons/ui-quickslot.png
+  interface/containerframe/ui-backpackbackground.png
+  interface/buttons/button-backpack-up.png
+  interface/paperdoll/ui-paperdoll-slot-bag.png"
 
 {
   for png in $extra_textures; do echo "texture $png"; done
-  "$here/xml2ui" "$GAME_DATA" "$here/ui_frames.c" PlayerFrame TargetFrame MainMenuBar $(seq -f ActionButton%g 1 12) 2>/dev/null
+  "$here/xml2ui" "$GAME_DATA" "$here/ui_frames.c" $(make -s -C "$here" print-ui-frames) 2>/dev/null
 } |
   while read -r kind png; do
     [ "$kind" = texture ] || continue

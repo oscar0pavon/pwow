@@ -29,9 +29,17 @@ typedef struct NodeState {
   bool has_bar_color;
   Rect rect;
   bool laid_out;
+  bool has_size;
+  float width, height;
+  bool has_tex_coords;
+  float tex_coords[4];
+  bool has_anchor;
+  UiAnchorDef anchor;
 } NodeState;
 
-static NodeState states[512];
+#define HUD_NODES_MAX 8192
+
+static NodeState states[HUD_NODES_MAX];
 static char texture_directory[256];
 static float ui_width;
 static float ui_height = UI_HEIGHT;
@@ -58,6 +66,48 @@ int hud_init(const char *directory) {
     states[i].image = pe_ui_image(path);
   }
   return 1;
+}
+
+int hud_node(const char *name) { return find_node(name); }
+
+void hud_set_size(int node, float width, float height) {
+  states[node].has_size = true;
+  states[node].width = width;
+  states[node].height = height;
+}
+
+void hud_set_tex_coords(int node, float left, float right, float top, float bottom) {
+  states[node].has_tex_coords = true;
+  states[node].tex_coords[0] = left;
+  states[node].tex_coords[1] = right;
+  states[node].tex_coords[2] = top;
+  states[node].tex_coords[3] = bottom;
+}
+
+//the node's anchors become this one: point of the node on relative_point of
+//the relative node, or of the screen for UI_SCREEN
+void hud_set_anchor(int node, int point, int relative, int relative_point, float x, float y) {
+  states[node].has_anchor = true;
+  states[node].anchor = (UiAnchorDef){point, relative, relative_point, x, y};
+}
+
+void hud_show_node(int node, bool shown) { states[node].shown = shown; }
+
+void hud_set_node_texture(int node, const char *texture) {
+  if (!texture) {
+    states[node].image = NULL;
+    return;
+  }
+
+  char path[512];
+  snprintf(path, sizeof(path), "%s/%s", texture_directory, texture);
+  PUiImage *image = pe_ui_image(path);
+  if (image)
+    states[node].image = image;
+}
+
+void hud_set_node_text(int node, const char *text) {
+  snprintf(states[node].text, TEXT_MAX, "%s", text);
 }
 
 void hud_show(const char *name, bool shown) {
@@ -174,7 +224,18 @@ static Rect lay_out(int node) {
   if (state->laid_out)
     return state->rect;
 
-  const UiNodeDef *def = &ui_nodes[node];
+  UiNodeDef effective = ui_nodes[node];
+  if (state->has_size) {
+    effective.width = state->width;
+    effective.height = state->height;
+  }
+  if (state->has_anchor) {
+    effective.anchor_count = 1;
+    effective.anchors[0] = state->anchor;
+    effective.set_all_points = false;
+  }
+
+  const UiNodeDef *def = &effective;
   Rect parent = def->parent == UI_SCREEN ? screen_rect() : lay_out(def->parent);
 
   state->rect = def->set_all_points || def->anchor_count == 0
@@ -217,7 +278,9 @@ static void draw_texture(int node) {
   static const float whole[4] = {0.f, 1.f, 0.f, 1.f};
   static const float white[4] = {1.f, 1.f, 1.f, 1.f};
 
-  draw_quad(state->image, lay_out(node), def->has_tex_coords ? def->tex_coords : whole,
+  draw_quad(state->image, lay_out(node),
+            state->has_tex_coords ? state->tex_coords
+                                  : def->has_tex_coords ? def->tex_coords : whole,
             def->has_color ? def->color : white,
             def->additive ? PE_UI_BLEND_ADD : PE_UI_BLEND_ALPHA);
 }
@@ -327,20 +390,24 @@ void hud_update_player(const PWowObjectState *state) {
               EXPERIENCE_COLOR);
 }
 
+#define BUTTON_COUNT 2
+
 static int hovered_node = UI_SCREEN;
-static int pressed_node = UI_SCREEN;
-static bool left_was_down;
+static int pressed_node[BUTTON_COUNT] = {UI_SCREEN, UI_SCREEN};
+static bool was_down[BUTTON_COUNT];
 
 static bool rect_contains(Rect rect, float x, float y) {
   return x >= rect.left && x <= rect.left + rect.width && y >= rect.bottom &&
          y <= rect.bottom + rect.height;
 }
 
-//the clickable node under the pointer, the one defined last when they overlap
+//the node under the pointer that takes the mouse, the one defined last when
+//they overlap: a button, or a frame that has the mouse enabled
 static int node_under(float x, float y) {
   int found = UI_SCREEN;
   for (int i = 0; i < ui_node_count; i++)
-    if (ui_nodes[i].clickable && is_visible(i) && rect_contains(states[i].rect, x, y))
+    if ((ui_nodes[i].clickable || ui_nodes[i].captures_mouse) && is_visible(i) &&
+        rect_contains(states[i].rect, x, y))
       found = i;
   return found;
 }
@@ -352,30 +419,38 @@ static void show_button_states() {
       continue;
 
     int button = ui_nodes[i].parent;
-    bool pressed = pressed_node == button && hovered_node == button;
+    bool pressed = pressed_node[0] == button && hovered_node == button;
     states[i].shown = (state == UI_STATE_HIGHLIGHT && hovered_node == button) ||
                       (state == UI_STATE_PUSHED && pressed);
   }
 }
 
-const char *hud_update_mouse(float mouse_x, float mouse_y, bool left_down) {
+HudClick hud_update_mouse(float mouse_x, float mouse_y, bool left_down, bool right_down) {
   float x = mouse_x / ui_scale;
   float y = ui_height - mouse_y / ui_scale;
-  const char *clicked = NULL;
+  bool down[BUTTON_COUNT] = {left_down, right_down};
+  HudClick clicked = {NULL, 0};
 
   hovered_node = node_under(x, y);
-  if (left_down && !left_was_down)
-    pressed_node = hovered_node;
 
-  if (!left_down && left_was_down) {
-    if (pressed_node != UI_SCREEN && pressed_node == hovered_node)
-      clicked = ui_nodes[pressed_node].name;
-    pressed_node = UI_SCREEN;
+  for (int button = 0; button < BUTTON_COUNT; button++) {
+    if (down[button] && !was_down[button])
+      pressed_node[button] = hovered_node;
+
+    if (!down[button] && was_down[button]) {
+      int node = pressed_node[button];
+      if (node != UI_SCREEN && node == hovered_node && ui_nodes[node].clickable)
+        clicked = (HudClick){ui_nodes[node].name, button + 1};
+      pressed_node[button] = UI_SCREEN;
+    }
+    was_down[button] = down[button];
   }
 
-  left_was_down = left_down;
   show_button_states();
   return clicked;
 }
 
-bool hud_mouse_over_ui() { return hovered_node != UI_SCREEN || pressed_node != UI_SCREEN; }
+bool hud_mouse_over_ui() {
+  return hovered_node != UI_SCREEN || pressed_node[0] != UI_SCREEN ||
+         pressed_node[1] != UI_SCREEN;
+}

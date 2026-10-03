@@ -12,6 +12,8 @@
 #define UPDATETYPE_CREATE_OBJECT2 3
 #define UPDATETYPE_OUT_OF_RANGE_OBJECTS 4
 
+#define TYPEID_ITEM 1
+#define TYPEID_CONTAINER 2
 #define TYPEID_UNIT 3
 
 #define UPDATEFLAG_TRANSPORT 0x02
@@ -37,6 +39,8 @@
 #define FIELD_UNIT_LEVEL 34
 #define FIELD_UNIT_BYTES_0 36
 #define FIELD_UNIT_BYTES_2 164
+#define FIELD_PLAYER_INV_SLOT_HEAD 486
+#define PLAYER_INVENTORY_FIELDS 78 //INV_SLOT_HEAD up to the end of PACK_SLOT_16
 #define FIELD_PLAYER_XP 716
 #define FIELD_PLAYER_NEXT_LEVEL_XP 717
 #define FIELD_UNIT_DISPLAYID 131
@@ -239,6 +243,8 @@ typedef struct UnitUpdate {
   bool has_raw[UNIT_RAW_FIELDS];
   u32 xp, next_level_xp;
   bool has_xp, has_next_level_xp;
+  u32 inventory[PLAYER_INVENTORY_FIELDS];
+  bool has_inventory[PLAYER_INVENTORY_FIELDS];
   float scale;
   bool has_scale;
   PWowVirtualItems items;
@@ -297,7 +303,13 @@ static void apply_player_update(PWowObjectState *state, const UnitUpdate *held) 
     state->player_xp = held->xp;
   if (held->has_next_level_xp)
     state->player_next_level_xp = held->next_level_xp;
+  pe_wowinventory_apply_player(&state->inventory, held->inventory, held->has_inventory);
   state->player_valid = true;
+}
+
+static void apply_item_update(PWowObjectState *state, u64 guid, const UnitUpdate *held) {
+  pe_wowinventory_apply_item(&state->inventory, guid, held->raw, held->has_raw,
+                             UNIT_RAW_FIELDS);
 }
 
 static void apply_unit_update(PWowCreature *creature, const UnitUpdate *held) {
@@ -338,6 +350,11 @@ static bool parse_values_block(Cursor *c, u32 *entry, u32 *display_id,
       if (field < UNIT_RAW_FIELDS) {
         held->raw[field] = value;
         held->has_raw[field] = true;
+      }
+      int inventory_field = field - FIELD_PLAYER_INV_SLOT_HEAD;
+      if (equip && inventory_field >= 0 && inventory_field < PLAYER_INVENTORY_FIELDS) {
+        held->inventory[inventory_field] = value;
+        held->has_inventory[inventory_field] = true;
       }
       if (field == FIELD_PLAYER_XP) {
         held->xp = value;
@@ -468,6 +485,8 @@ void pe_wowobject_handle_packet(PWowObjectState *state, const u8 *payload,
           existing->display_id = display_id;
         apply_unit_update(existing, &held);
       }
+      if (pe_wowinventory_has_item(&state->inventory, guid))
+        apply_item_update(state, guid, &held);
       if (equip)
         apply_player_update(state, &held);
       continue;
@@ -523,6 +542,9 @@ void pe_wowobject_handle_packet(PWowObjectState *state, const u8 *payload,
         }
       }
     }
+
+    if (movement_ok && values_ok && (object_type == TYPEID_ITEM || object_type == TYPEID_CONTAINER))
+      apply_item_update(state, guid, &held);
 
     if (movement_ok && values_ok && equip)
       apply_player_update(state, &held);

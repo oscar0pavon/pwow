@@ -114,4 +114,14 @@ bool pe_wowworld_query_item(PWowWorld *world, PWowObjectState *state,
 //does not wait for an answer: whatever the server says back is not read
 bool pe_wowworld_cast_spell(PWowWorld *world, u32 spell, u64 target_guid);
 
+//an item by where the server keeps it: the bag index is 255 for the backpack
+//and the backpack's slots are 23 to 38, a bag on the bar is 19 to 22 and its
+//slots start at 0. neither waits for an answer
+bool pe_wowworld_use_item(PWowWorld *world, u8 bag_index, u8 slot);
+bool pe_wowworld_autoequip_item(PWowWorld *world, u8 bag_index, u8 slot);
+
+//asks, without waiting, for the template of the first few owned items whose
+//kind was not asked about yet; the answers arrive through pe_wowworld_poll()
+void pe_wowworld_request_item_templates(PWowWorld *world, PWowObjectState *state);
+
 #endif

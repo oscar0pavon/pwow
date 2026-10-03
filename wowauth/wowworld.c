@@ -21,6 +21,9 @@
 #define OP_SMSG_MONSTER_MOVE 221
 #define OP_SMSG_ACTION_BUTTONS 0x129
 #define OP_CMSG_CAST_SPELL 0x12E
+#define OP_CMSG_USE_ITEM 0xAB
+#define OP_CMSG_AUTOEQUIP_ITEM 0x10A
+#define OP_SMSG_DESTROY_OBJECT 0xAA
 #define OP_CMSG_ITEM_QUERY_SINGLE 86
 #define OP_SMSG_ITEM_QUERY_SINGLE_RESPONSE 88
 
@@ -232,6 +235,12 @@ static bool fold_world_packet(PWowObjectState *state, u16 opcode,
   case OP_SMSG_MONSTER_MOVE:
     pe_wowobject_handle_monster_move(state, payload, payload_len);
     return true;
+  case OP_SMSG_ITEM_QUERY_SINGLE_RESPONSE:
+    pe_wowinventory_handle_item_query(&state->inventory, payload, payload_len);
+    return true;
+  case OP_SMSG_DESTROY_OBJECT:
+    pe_wowinventory_handle_destroy(&state->inventory, payload, payload_len);
+    return true;
   case OP_SMSG_ACTION_BUTTONS:
     pe_wowobject_handle_action_buttons(state, payload, payload_len);
     return true;
@@ -380,12 +389,11 @@ bool pe_wowworld_query_item(PWowWorld *world, PWowObjectState *state,
           "disconnected while waiting for SMSG_ITEM_QUERY_SINGLE_RESPONSE");
       return false;
     }
-    if (fold_world_packet(state, opcode, payload, payload_len))
-      continue;
     if (opcode == OP_SMSG_ITEM_QUERY_SINGLE_RESPONSE) {
       found = true;
       break;
     }
+    fold_world_packet(state, opcode, payload, payload_len);
   }
   if (!found) {
     fail(error, error_max, "never saw SMSG_ITEM_QUERY_SINGLE_RESPONSE");
@@ -477,4 +485,40 @@ bool pe_wowworld_cast_spell(PWowWorld *world, u32 spell, u64 target_guid) {
     wbuf_packed_guid(&buf, target_guid);
 
   return pe_wowworld_send_packet(world, OP_CMSG_CAST_SPELL, buf.data, buf.len);
+}
+
+#define ITEM_QUERIES_PER_CALL 4
+
+static bool send_item_query(PWowWorld *world, u32 entry) {
+  WBuf buf = {0};
+  wbuf_u32(&buf, entry);
+  wbuf_u64(&buf, 0);
+  return pe_wowworld_send_packet(world, OP_CMSG_ITEM_QUERY_SINGLE, buf.data, buf.len);
+}
+
+void pe_wowworld_request_item_templates(PWowWorld *world, PWowObjectState *state) {
+  for (int i = 0; i < ITEM_QUERIES_PER_CALL; i++) {
+    u32 entry = pe_wowinventory_next_unasked(&state->inventory);
+    if (!entry || !send_item_query(world, entry))
+      return;
+    pe_wowinventory_mark_asked(&state->inventory, entry);
+  }
+}
+
+//CMSG_USE_ITEM: the item's bag and slot, the spell slot of the item (its
+//first), then the targets of the spell, none
+bool pe_wowworld_use_item(PWowWorld *world, u8 bag_index, u8 slot) {
+  WBuf buf = {0};
+  wbuf_u8(&buf, bag_index);
+  wbuf_u8(&buf, slot);
+  wbuf_u8(&buf, 0);
+  wbuf_u16(&buf, TARGET_FLAG_SELF);
+  return pe_wowworld_send_packet(world, OP_CMSG_USE_ITEM, buf.data, buf.len);
+}
+
+bool pe_wowworld_autoequip_item(PWowWorld *world, u8 bag_index, u8 slot) {
+  WBuf buf = {0};
+  wbuf_u8(&buf, bag_index);
+  wbuf_u8(&buf, slot);
+  return pe_wowworld_send_packet(world, OP_CMSG_AUTOEQUIP_ITEM, buf.data, buf.len);
 }

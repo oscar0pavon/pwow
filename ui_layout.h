@@ -68,6 +68,7 @@ typedef struct UiNodeDef {
   UiJustify justify;
   bool clickable;
   UiState state;
+  bool captures_mouse; //enableMouse: the pointer over it is not the world's
 } UiNodeDef;
 
 extern const UiNodeDef ui_nodes[];

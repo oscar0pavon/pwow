@@ -4,6 +4,8 @@
 #include <engine/numbers.h>
 #include <stdbool.h>
 
+#include "wowinventory.h"
+
 //ongoing world state, the third phase after wowauth's login and wowworld's
 //handshake/char-select: parses SMSG_UPDATE_OBJECT/SMSG_COMPRESSED_UPDATE_
 //OBJECT, the packets that carry every creature's spawn position and display
@@ -116,6 +118,8 @@ typedef struct PWowObjectState {
   //counts how many times they came, so a reader knows to look again
   u32 action_buttons[PE_WOWOBJECT_ACTION_BUTTONS];
   u32 action_buttons_serial;
+
+  PWowInventory inventory;
 } PWowObjectState;
 
 //parses one SMSG_ACTION_BUTTONS payload into state

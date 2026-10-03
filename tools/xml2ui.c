@@ -15,7 +15,7 @@
 #include "../ui_layout.h"
 
 #define MAX_ATTRIBUTES 24
-#define MAX_NODES 4096
+#define MAX_NODES 8192
 
 typedef struct Element {
   char tag[32];
@@ -509,6 +509,7 @@ static void add_frame(const Element *element, int parent, const char *parent_nam
 
   def->clickable = strcmp(element->tag, "Button") == 0 ||
                    strcmp(element->tag, "CheckButton") == 0;
+  def->captures_mouse = is_true(effective_attribute(&c, "enableMouse"));
   add_state_texture(&c, node, name, "PushedTexture", UI_STATE_PUSHED, 3);
   add_state_texture(&c, node, name, "HighlightTexture", UI_STATE_HIGHLIGHT, 4);
   add_state_texture(&c, node, name, "CheckedTexture", UI_STATE_CHECKED, 4);
@@ -641,7 +642,8 @@ static void write_node(FILE *out, int index) {
   write_floats(out, n->color, 4);
   fputs("}, ", out);
   write_float(out, n->font_size);
-  fprintf(out, ", %d, %d, %d},\n", n->justify, n->clickable, n->state);
+  fprintf(out, ", %d, %d, %d, %d},\n", n->justify, n->clickable, n->state,
+          n->captures_mouse);
 }
 
 static int compare_regions(const void *a, const void *b) {
