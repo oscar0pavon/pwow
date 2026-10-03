@@ -390,7 +390,11 @@ bool pe_wowworld_query_item(PWowWorld *world, PWowObjectState *state,
           "disconnected while waiting for SMSG_ITEM_QUERY_SINGLE_RESPONSE");
       return false;
     }
-    if (opcode == OP_SMSG_ITEM_QUERY_SINGLE_RESPONSE) {
+    u32 answered_entry = 0;
+    if (payload_len >= 4)
+      memcpy(&answered_entry, payload, sizeof(answered_entry));
+    if (opcode == OP_SMSG_ITEM_QUERY_SINGLE_RESPONSE &&
+        (answered_entry & 0x7FFFFFFF) == item_entry) {
       found = true;
       break;
     }

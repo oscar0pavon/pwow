@@ -17,6 +17,10 @@
 #include <string.h>
 #include <unistd.h>
 
+//WoW.exe draws a pauldron about half again as big as its model, matched by eye
+//against the client's own screenshot
+#define SHOULDER_SCALE 1.5f
+
 static PShader attached_shader;
 
 void attached_init(PShader shader) { attached_shader = shader; }
@@ -186,6 +190,9 @@ bool attached_item_create(PAttachedItem *out, const PAttachmentPoints *points,
 
   out->point = *point;
   glm_mat4_identity(out->local);
+  if (point_id == ATTACHMENT_SHOULDER_LEFT ||
+      point_id == ATTACHMENT_SHOULDER_RIGHT)
+    glm_scale_uni(out->local, SHOULDER_SCALE);
   return true;
 }
 
@@ -197,12 +204,7 @@ void attached_carry_matrix(bool big_weapon, mat4 out) {
   glm_mat4_identity(out);
 
   if (big_weapon) {
-    //TEMPORARY tuning knobs: PWOW_SHEATH_2H="tx ty tz cant scale" replaces the
-    //offset in the attachment's own axes, the cant in degrees and the size
-    float tx = -0.03f, ty = -0.10f, tz = 0.0f, cant = 33.0f, scale = 1.0f;
-    const char *tuning = getenv("PWOW_SHEATH_2H");
-    if (tuning)
-      sscanf(tuning, "%f %f %f %f %f", &tx, &ty, &tz, &cant, &scale);
+    float tx = -0.03f, ty = -0.10f, tz = 0.15f, cant = 33.0f, scale = 1.3f;
 
     glm_translate(out, (vec3){tx, ty, tz});
     glm_rotate(out, glm_rad(cant), (vec3){1, 0, 0});

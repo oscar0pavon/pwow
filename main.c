@@ -209,7 +209,7 @@ static void add_player_item(u32 drawn, u32 sheathed, bool big_weapon,
   const PAttachmentPoint *carried = attachment_points_find(&player_points, sheathed);
   held->sheathed = carried ? *carried : held->drawn;
   if (sheathed == drawn)
-    glm_mat4_identity(held->sheathed_local);
+    glm_mat4_copy(held->attached.local, held->sheathed_local);
   else
     attached_carry_matrix(big_weapon, held->sheathed_local);
   player_held_count++;
@@ -551,7 +551,7 @@ static void player_draw(VkCommandBuffer *command, uint32_t image_index) {
   for (int i = 0; i < player_held_count; i++) {
     PlayerHeldItem *held = &player_held[i];
     held->attached.point = player_weapons_drawn ? held->drawn : held->sheathed;
-    if (player_weapons_drawn)
+    if (player_weapons_drawn && held->drawn.id != held->sheathed.id)
       glm_mat4_identity(held->attached.local);
     else
       glm_mat4_copy(held->sheathed_local, held->attached.local);
