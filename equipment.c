@@ -158,7 +158,11 @@ void resolve_tauren_body(const PAppearance *look, PBodyLayers *out) {
 #define ITEMDISPLAYINFO_DBC_PATH "data/dbc/ItemDisplayInfo.dbc"
 #define ITEMDISPLAYINFO_FIELD_ID 0
 #define ITEMDISPLAYINFO_FIELD_MODEL 1
+#define ITEMDISPLAYINFO_FIELD_MODEL_RIGHT 2
 #define ITEMDISPLAYINFO_FIELD_MODEL_TEXTURE 3
+#define ITEMDISPLAYINFO_FIELD_MODEL_TEXTURE_RIGHT 4
+#define ITEMDISPLAYINFO_FIELD_HELM_VISIBILITY_MALE 12
+#define ITEMDISPLAYINFO_FIELD_HELM_VISIBILITY_FEMALE 13
 #define ITEMDISPLAYINFO_FIELD_GEOSET_GROUP1 6
 #define ITEMDISPLAYINFO_FIELD_GEOSET_GROUP3 8
 #define ITEMDISPLAYINFO_FIELD_TEXTURE_ARM_UPPER 14
@@ -191,6 +195,15 @@ bool resolve_item_display_info(u32 display_info_id, PItemDisplayInfo *out) {
                            sizeof(out->model));
     copy_dbc_texture_field(&dbc, r, ITEMDISPLAYINFO_FIELD_MODEL_TEXTURE,
                            out->model_texture, sizeof(out->model_texture));
+    copy_dbc_texture_field(&dbc, r, ITEMDISPLAYINFO_FIELD_MODEL_RIGHT,
+                           out->model_right, sizeof(out->model_right));
+    copy_dbc_texture_field(&dbc, r, ITEMDISPLAYINFO_FIELD_MODEL_TEXTURE_RIGHT,
+                           out->model_texture_right,
+                           sizeof(out->model_texture_right));
+    out->helm_visibility[SEX_MALE] =
+        pe_wowdbc_get_u32(&dbc, r, ITEMDISPLAYINFO_FIELD_HELM_VISIBILITY_MALE);
+    out->helm_visibility[SEX_FEMALE] =
+        pe_wowdbc_get_u32(&dbc, r, ITEMDISPLAYINFO_FIELD_HELM_VISIBILITY_FEMALE);
     out->geoset_group1 =
         pe_wowdbc_get_u32(&dbc, r, ITEMDISPLAYINFO_FIELD_GEOSET_GROUP1);
     out->geoset_group3 =
@@ -225,6 +238,34 @@ bool resolve_item_display_info(u32 display_info_id, PItemDisplayInfo *out) {
   return found;
 }
 
+#define HELMETGEOSETVISDATA_DBC_PATH "data/dbc/HelmetGeosetVisData.dbc"
+#define HELMETGEOSETVISDATA_FIELD_ID 0
+
+//a row is its id and the masks of what a helm hides, of the hair style, the
+//facial hair and the ears: any mask set means it hides something
+bool item_hides_hair(const PItemDisplayInfo *helm, u8 sex) {
+  u32 visibility = helm->helm_visibility[sex == SEX_FEMALE ? SEX_FEMALE : SEX_MALE];
+  if (visibility == 0)
+    return false;
+
+  PWowDBC dbc;
+  if (!pe_wowdbc_load(HELMETGEOSETVISDATA_DBC_PATH, &dbc))
+    return false;
+
+  bool hides = false;
+  for (u32 r = 0; r < dbc.record_count && !hides; r++) {
+    if (pe_wowdbc_get_u32(&dbc, r, HELMETGEOSETVISDATA_FIELD_ID) != visibility)
+      continue;
+    for (u32 field = 1; field < dbc.field_count; field++)
+      if (pe_wowdbc_get_u32(&dbc, r, field) != 0)
+        hides = true;
+    break;
+  }
+
+  pe_wowdbc_free(&dbc);
+  return hides;
+}
+
 //---------------------------------------------------------------------------
 //geoset selection - a port of WoWee's entity_spawner_player.cpp
 //---------------------------------------------------------------------------
@@ -234,6 +275,8 @@ bool resolve_item_display_info(u32 display_info_id, PItemDisplayInfo *out) {
 //geoset_rules.hpp's own bare/base ids (WoWee) - a group's variant 1 (or the
 //named base one) means "none of this", the same convention taurenmale.glb's
 //own export carries
+#define GEOSET_BALD_SCALP 1       //group 0: the scalp of hair style 0, with
+                                  //the body (id 0) under every other
 #define GEOSET_BARE_FOREARMS 401  //group 4: no gloves
 #define GEOSET_BARE_SHINS 501     //group 5: no boots
 #define GEOSET_BARE_SLEEVES 801   //group 8: no chest/wrist sleeves
@@ -281,8 +324,8 @@ static u32 pick_geoset(PModel *model, u32 preferred, u32 fallback) {
 
 #define ACTIVE_GEOSETS_MAX 64
 
-void apply_equipment_geosets(PModel *model, const PEquippedItem *items,
-                             int count) {
+void apply_equipment_geosets(PModel *model, const PAppearance *look,
+                             const PEquippedItem *items, int count) {
   u32 active[ACTIVE_GEOSETS_MAX];
   u32 active_count = pe_model_default_geosets(model, active, ACTIVE_GEOSETS_MAX);
   if (active_count > ACTIVE_GEOSETS_MAX)
@@ -302,6 +345,27 @@ void apply_equipment_geosets(PModel *model, const PEquippedItem *items,
       active[kept++] = active[i];
   }
   active_count = kept;
+
+  //group 0 is the body, id 0, and under it one of the scalps, ids 1 and up: a
+  //hair style's is its number plus one, and the bald cap, hair style 0's, is
+  //what a helm that hides the hair leaves. a model without that scalp keeps
+  //the default one it was given
+  u32 geoset_scalp = look->hair_style + 1;
+  {
+    static const u32 wanted[] = {INVTYPE_HEAD};
+    const PEquippedItem *helm =
+        find_item_by_inv_type(items, count, wanted, COUNT_OF(wanted));
+    if (helm && item_hides_hair(&helm->display, look->sex))
+      geoset_scalp = GEOSET_BALD_SCALP;
+  }
+  geoset_scalp = pick_geoset(model, geoset_scalp, GEOSET_BALD_SCALP);
+  if (geoset_scalp != 0) {
+    u32 without_scalps = 0;
+    for (u32 i = 0; i < active_count; i++)
+      if (active[i] == 0 || active[i] / 100 != 0)
+        active[without_scalps++] = active[i];
+    active_count = without_scalps;
+  }
 
   u32 geoset_gloves = pick_geoset(model, GEOSET_BARE_FOREARMS, GEOSET_BARE_FOREARMS);
   u32 geoset_boots = pick_geoset(model, GEOSET_BARE_SHINS, GEOSET_BARE_SHINS);
@@ -401,9 +465,9 @@ void apply_equipment_geosets(PModel *model, const PEquippedItem *items,
         find_item_by_inv_type(items, count, wanted, COUNT_OF(wanted)) != NULL;
   }
 
-  u32 overrides[] = {geoset_gloves, geoset_boots,  geoset_sleeves,
-                    geoset_pants,  geoset_belt,   geoset_cape,
-                    has_tabard ? (u32)GEOSET_DEFAULT_TABARD : 0};
+  u32 overrides[] = {geoset_scalp,  geoset_gloves, geoset_boots,
+                    geoset_sleeves, geoset_pants,  geoset_belt,
+                    geoset_cape,    has_tabard ? (u32)GEOSET_DEFAULT_TABARD : 0};
   for (u32 i = 0; i < COUNT_OF(overrides); i++)
     if (overrides[i] != 0 && active_count < ACTIVE_GEOSETS_MAX)
       active[active_count++] = overrides[i];

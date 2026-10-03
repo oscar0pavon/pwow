@@ -46,7 +46,7 @@
 
 //the hands of PWowVirtualItems, and what a held item's class and subclass say
 //about it (vmangos's ItemPrototype.h)
-#define ATTACHED_HANDS 2
+#define RANGED_SLOT 2
 #define ITEM_CLASS_ARMOR 4
 #define ITEM_SUBCLASS_SHIELD 6
 
@@ -77,12 +77,12 @@ static const char *const ITEM_MODEL_SUFFIXES[] = {
 };
 
 //the equipment columns of CreatureDisplayInfoExtra, each an ItemDisplayInfo
-//id (0 for an empty slot), with the InventoryType that slot stands for.
-//shoulders (field 9) are left out: no geoset or texture rule uses them yet
+//id (0 for an empty slot), with the InventoryType that slot stands for
 static const struct {
   u32 field, inventory_type;
 } EXTRA_EQUIPMENT_SLOTS[] = {
-    {8, INVTYPE_HEAD},   {10, INVTYPE_BODY},  {11, INVTYPE_CHEST},
+    {8, INVTYPE_HEAD},   {9, INVTYPE_SHOULDERS}, {10, INVTYPE_BODY},
+    {11, INVTYPE_CHEST},
     {12, INVTYPE_WAIST}, {13, INVTYPE_LEGS},  {14, INVTYPE_FEET},
     {15, INVTYPE_WRISTS}, {16, INVTYPE_HANDS}, {17, INVTYPE_TABARD},
 };
@@ -590,46 +590,68 @@ static void give_own_index_buffer(PModel *model) {
                                             VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
 }
 
-//puts an item at a point of the body, if it can be had: one that cannot is
-//simply not drawn
-static void attach_item(CreatureInstance *inst, const HumanoidTemplate *template,
+//puts a model at a point of the body, if it can be had: one that cannot is
+//simply not drawn. false when nothing was added
+static bool attach_item(CreatureInstance *inst, const HumanoidTemplate *template,
                         u32 point_id, const char *folder, const char *suffix,
-                        const PItemDisplayInfo *item) {
+                        const char *model, const char *texture) {
   if (inst->attached_count >= ATTACHED_ITEMS_MAX)
-    return;
+    return false;
 
-  if (attached_item_create(&inst->attached[inst->attached_count],
-                           &template->points, point_id, folder, suffix, item))
-    inst->attached_count++;
+  if (!attached_item_create(&inst->attached[inst->attached_count],
+                            &template->points, point_id, folder, suffix, model,
+                            texture))
+    return false;
+
+  inst->attached_count++;
+  return true;
 }
 
 //a hand holds what the wire says: the main hand's item in the right hand,
 //the off hand's in the left, or on the arm when it is a shield. the ranged
-//slot is carried on the back and not drawn yet
+//slot is carried on the back, since a creature has nothing to draw it for
 static void attach_held(CreatureInstance *inst, const HumanoidTemplate *template,
                         const PWowVirtualItems *held) {
-  for (int slot = 0; slot < ATTACHED_HANDS; slot++) {
+  for (int slot = 0; slot < PE_WOWOBJECT_VIRTUAL_ITEM_SLOTS; slot++) {
     PItemDisplayInfo item;
     if (held->display[slot] == 0 ||
         !resolve_item_display_info(held->display[slot], &item))
       continue;
 
+    if (slot == RANGED_SLOT) {
+      if (attach_item(inst, template, ATTACHMENT_BACK, "weapon", "", item.model,
+                      item.model_texture))
+        attached_carry_matrix(true, inst->attached[inst->attached_count - 1].local);
+      continue;
+    }
+
     bool shield = held->item_class[slot] == ITEM_CLASS_ARMOR &&
                   held->item_subclass[slot] == ITEM_SUBCLASS_SHIELD;
     u32 point = shield ? ATTACHMENT_SHIELD
                        : (slot == 0 ? ATTACHMENT_RIGHT_HAND : ATTACHMENT_LEFT_HAND);
-    attach_item(inst, template, point, shield ? "shield" : "weapon", "", &item);
+    attach_item(inst, template, point, shield ? "shield" : "weapon", "",
+                item.model, item.model_texture);
   }
 }
 
-//the helm of the display's own extra row, at the head
-static void attach_helm(CreatureInstance *inst, const HumanoidTemplate *template,
-                        const ResolvedDisplay *resolved) {
-  for (int i = 0; i < resolved->item_count; i++)
-    if (resolved->items[i].inventory_type == INVTYPE_HEAD)
+//what the display's own extra row puts on the head and the shoulders: a helm
+//of the body's own race and sex, and a model for each shoulder
+static void attach_head_and_shoulders(CreatureInstance *inst,
+                                      const HumanoidTemplate *template,
+                                      const ResolvedDisplay *resolved) {
+  for (int i = 0; i < resolved->item_count; i++) {
+    const PItemDisplayInfo *item = &resolved->items[i].display;
+    if (resolved->items[i].inventory_type == INVTYPE_HEAD) {
       attach_item(inst, template, ATTACHMENT_HELM, "head",
-                  ITEM_MODEL_SUFFIXES[resolved->look.sex],
-                  &resolved->items[i].display);
+                  ITEM_MODEL_SUFFIXES[resolved->look.sex], item->model,
+                  item->model_texture);
+    } else if (resolved->items[i].inventory_type == INVTYPE_SHOULDERS) {
+      attach_item(inst, template, ATTACHMENT_SHOULDER_LEFT, "shoulder", "",
+                  item->model, item->model_texture);
+      attach_item(inst, template, ATTACHMENT_SHOULDER_RIGHT, "shoulder", "",
+                  item->model_right, item->model_texture_right);
+    }
+  }
 }
 
 //an instance of its sex's body, dressed from its CreatureDisplayInfoExtra
@@ -650,7 +672,8 @@ static bool create_humanoid_instance(CreatureInstance *inst,
   pe_load_texture(body.skin, &inst->model.texture);
   give_own_index_buffer(&inst->model);
 
-  apply_equipment_geosets(&inst->model, resolved->items, resolved->item_count);
+  apply_equipment_geosets(&inst->model, &resolved->look, resolved->items,
+                          resolved->item_count);
   apply_equipment_texture(&inst->model, &inst->skin, &body, resolved->items,
                           resolved->item_count);
   seed_pose(inst);
@@ -659,7 +682,7 @@ static bool create_humanoid_instance(CreatureInstance *inst,
   inst->foot_offset = HUMANOID_FOOT_OFFSETS[resolved->look.sex];
   inst->dressed = true;
   inst->attached_count = 0;
-  attach_helm(inst, template, resolved);
+  attach_head_and_shoulders(inst, template, resolved);
   attach_held(inst, template, held);
   return true;
 }

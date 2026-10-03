@@ -51,6 +51,7 @@ void resolve_tauren_body(const PAppearance *look, PBodyLayers *out);
 //names, independent of where its own data originally came from (a player's
 //PLAYER_VISIBLE_ITEM index, or a humanoid creature's EquipDisplay slot)
 #define INVTYPE_HEAD 1
+#define INVTYPE_SHOULDERS 3
 #define INVTYPE_BODY 4 //shirt
 #define INVTYPE_CHEST 5
 #define INVTYPE_WAIST 6
@@ -74,6 +75,10 @@ typedef struct PItemDisplayInfo {
   //a weapon) and its texture, as the game spells them: "Helm_Leather_A_02.mdx"
   //and "Helm_Leather_A_02Blue". empty for an item that is only body art
   char model[64], model_texture[64];
+  //the right one of a pair of shoulders, whose left is the model above
+  char model_right[64], model_texture_right[64];
+  //a helm's rows of HelmetGeosetVisData.dbc, for a male and a female wearer
+  u32 helm_visibility[2];
   char texture_torso_upper[64], texture_torso_lower[64];
   char texture_leg_upper[64], texture_leg_lower[64];
   char texture_arm_upper[64], texture_arm_lower[64];
@@ -96,17 +101,24 @@ typedef struct PEquippedItem {
   PItemDisplayInfo display;
 } PEquippedItem;
 
+//whether a helm covers the hair of a wearer of sex: not every one does, a
+//circlet or a crown sits over it and the data says which is which. its row of
+//HelmetGeosetVisData.dbc names what to hide, and the row circlets use hides
+//nothing, as does having no row at all
+bool item_hides_hair(const PItemDisplayInfo *helm, u8 sex);
+
 //selects and applies model's active geosets for the given equipped items -
 //a port of WoWee's entity_spawner_player.cpp geoset-selection rules
 //(eraseGroup/pickGeoset/equippedGeoset and the per-InventoryType group
-//mapping). helm/shoulder model attachment, weapons and belt/tabard art are
-//out of scope - only the geoset selection itself is ported. safe to call
+//mapping), and the scalp of look's hair style, bald under a helm that hides it.
+//the models of helms, shoulders and weapons are attached.h's, and belt and
+//tabard art is out of scope. safe to call
 //more than once on the same model (an equipment change). it replaces and
 //destroys the model's index buffer, so one shared with a template or another
 //instance (pe_vk_model_instance*()) has to be given a copy of its own first -
 //see pe_model_set_active_geosets()'s own doc comment in pengine
-void apply_equipment_geosets(PModel *model, const PEquippedItem *items,
-                             int count);
+void apply_equipment_geosets(PModel *model, const PAppearance *look,
+                             const PEquippedItem *items, int count);
 
 //composites body's layers plus every item's own region textures (their
 //.blp converted to a data/ png at runtime, the first time a given one is

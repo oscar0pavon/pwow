@@ -32,9 +32,11 @@ if [ ! -f "$out/dbc/ItemDisplayInfo.dbc" ]; then
   cp "$DBC_SOURCE/ItemDisplayInfo.dbc" "$out/dbc/ItemDisplayInfo.dbc"
 fi
 
-if [ ! -f "$out/dbc/CreatureDisplayInfoExtra.dbc" ]; then
-  cp "$DBC_SOURCE/CreatureDisplayInfoExtra.dbc" "$out/dbc/CreatureDisplayInfoExtra.dbc"
-fi
+for dbc in CreatureDisplayInfoExtra HelmetGeosetVisData; do
+  if [ ! -f "$out/dbc/$dbc.dbc" ]; then
+    cp "$DBC_SOURCE/$dbc.dbc" "$out/dbc/$dbc.dbc"
+  fi
+done
 
 for id in $(seq 0 18); do
   png=$(printf "character/tauren/male/taurenmaleskin00_%02d.png" "$id")

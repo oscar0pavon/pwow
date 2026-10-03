@@ -13,6 +13,7 @@
 
 #include <ctype.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -163,8 +164,8 @@ static void item_component_base(char *out, size_t size, const char *folder,
 
 bool attached_item_create(PAttachedItem *out, const PAttachmentPoints *points,
                           u32 point_id, const char *folder, const char *suffix,
-                          const PItemDisplayInfo *item) {
-  if (item->model[0] == '\0' || item->model_texture[0] == '\0')
+                          const char *model, const char *texture) {
+  if (model[0] == '\0' || texture[0] == '\0')
     return false;
 
   const PAttachmentPoint *point = attachment_points_find(points, point_id);
@@ -172,10 +173,8 @@ bool attached_item_create(PAttachedItem *out, const PAttachmentPoints *points,
     return false;
 
   char model_base[256], texture_base[256];
-  item_component_base(model_base, sizeof(model_base), folder, item->model,
-                      suffix);
-  item_component_base(texture_base, sizeof(texture_base), folder,
-                      item->model_texture, "");
+  item_component_base(model_base, sizeof(model_base), folder, model, suffix);
+  item_component_base(texture_base, sizeof(texture_base), folder, texture, "");
   if (!gamedata_ensure_model(model_base) || !gamedata_ensure_png(texture_base))
     return false;
 
@@ -188,6 +187,39 @@ bool attached_item_create(PAttachedItem *out, const PAttachmentPoints *points,
   out->point = *point;
   glm_mat4_identity(out->local);
   return true;
+}
+
+//from WoWee's weaponLocalTransform(), tuned there against the real client. a
+//weapon model is long along its own X, which is the character's front to back.
+//those turns are in the model's own axes and the glb's are a quarter about X
+//from them (m22gltf's remap), so they are carried over by that turn
+void attached_carry_matrix(bool big_weapon, mat4 out) {
+  glm_mat4_identity(out);
+
+  if (big_weapon) {
+    //TEMPORARY tuning knobs: PWOW_SHEATH_2H="tx ty tz cant scale" replaces the
+    //offset in the attachment's own axes, the cant in degrees and the size
+    float tx = -0.03f, ty = -0.10f, tz = 0.0f, cant = 33.0f, scale = 1.0f;
+    const char *tuning = getenv("PWOW_SHEATH_2H");
+    if (tuning)
+      sscanf(tuning, "%f %f %f %f %f", &tx, &ty, &tz, &cant, &scale);
+
+    glm_translate(out, (vec3){tx, ty, tz});
+    glm_rotate(out, glm_rad(cant), (vec3){1, 0, 0});
+    glm_rotate(out, glm_rad(90.0f), (vec3){0, 1, 0});
+    glm_rotate(out, glm_rad(90.0f), (vec3){1, 0, 0});
+    glm_scale_uni(out, scale);
+  } else {
+    glm_rotate(out, glm_rad(90.0f), (vec3){0, 1, 0});
+  }
+
+  mat4 remap, remap_inverse, carried;
+  glm_mat4_identity(remap);
+  glm_rotate(remap, glm_rad(-90.0f), (vec3){1, 0, 0});
+  glm_mat4_identity(remap_inverse);
+  glm_rotate(remap_inverse, glm_rad(90.0f), (vec3){1, 0, 0});
+  glm_mat4_mul(remap, out, carried);
+  glm_mat4_mul(carried, remap_inverse, out);
 }
 
 void attached_item_draw(PAttachedItem *item, const PSkin *body,

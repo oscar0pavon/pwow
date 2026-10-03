@@ -151,15 +151,19 @@ typedef struct PlayerEquipSlot {
 
 static PlayerEquipSlot player_equip_slots[PE_WOWOBJECT_PLAYER_EQUIP_SLOTS];
 
-//Player::EquipmentSlots' main hand and off hand: what the character holds in
-//its hands. the ranged slot is carried on the back and not drawn yet
+//Player::EquipmentSlots' head, shoulders, main hand, off hand and ranged weapon
+#define PLAYER_SLOT_HEAD 0
+#define PLAYER_SLOT_SHOULDERS 2
 #define PLAYER_SLOT_MAIN_HAND 15
 #define PLAYER_SLOT_OFF_HAND 16
+#define PLAYER_SLOT_RANGED 17
 
 static PAttachmentPoints player_points;
 
-//one weapon or shield in a hand slot, carried at sheathed until the character
-//attacks and then held at drawn. turned by sheathed_local when carried
+//one item on the body: where it is held and where it is carried, and how it is
+//turned when carried. a weapon is held at drawn while the character attacks and
+//carried at sheathed the rest of the time; a pair of shoulders is both, at the
+//same place
 typedef struct PlayerHeldItem {
   PAttachedItem attached;
   PAttachmentPoint drawn, sheathed;
@@ -170,83 +174,82 @@ static PlayerHeldItem player_held[ATTACHED_ITEMS_MAX];
 static int player_held_count;
 static bool player_weapons_drawn;
 
-//a two handed weapon rides on the back, the other weapons on the right hip
-//(main hand) or the left (off hand), and a shield stays on its arm: the
-//client's own places, as WoWee's weaponAttachment() has them
+//a two handed weapon and a ranged one ride on the back, the other weapons on
+//the right hip (main hand) or the left (off hand), and a shield stays on its
+//arm: the client's own places, as WoWee's weaponAttachment() has them
 static u32 sheath_point_of(int slot, u32 inventory_type) {
   if (inventory_type == INVTYPE_SHIELD)
     return ATTACHMENT_SHIELD;
-  if (inventory_type == INVTYPE_2HWEAPON)
+  if (inventory_type == INVTYPE_2HWEAPON || slot == PLAYER_SLOT_RANGED)
     return ATTACHMENT_BACK;
   return slot == PLAYER_SLOT_MAIN_HAND ? ATTACHMENT_HIP_RIGHT
                                        : ATTACHMENT_HIP_LEFT;
 }
 
-//how a carried weapon is turned at its point, from WoWee's
-//weaponLocalTransform(), tuned there against the real client. a weapon model
-//is long along its own X, which is the character's front to back: a hip one
-//is turned to point down along the leg, a big one stood up and canted across
-//the back. those turns are in the model's own axes, and the glb's are turned
-//a quarter about X from them (m22gltf's remap), so they are carried over
-static void sheathed_local_of(u32 inventory_type, mat4 out) {
-  glm_mat4_identity(out);
-  if (inventory_type == INVTYPE_SHIELD)
+//puts a model on the body at drawn, carried at sheathed turned by how a big
+//weapon or a small one is carried. a shoulder is carried where it is held
+static void add_player_item(u32 drawn, u32 sheathed, bool big_weapon,
+                            const char *folder, const char *suffix,
+                            const char *model, const char *texture) {
+  if (player_held_count >= ATTACHED_ITEMS_MAX)
     return;
 
-  if (inventory_type == INVTYPE_2HWEAPON) {
-    //TEMPORARY tuning knobs: PWOW_SHEATH_2H="tx ty tz cant scale" replaces the
-    //offset in the attachment's own axes, the cant in degrees and the size
-    float tx = -0.03f, ty = -0.10f, tz = 0.0f, cant = 33.0f, scale = 1.0f;
-    const char *tuning = getenv("PWOW_SHEATH_2H");
-    if (tuning)
-      sscanf(tuning, "%f %f %f %f %f", &tx, &ty, &tz, &cant, &scale);
+  PlayerHeldItem *held = &player_held[player_held_count];
+  if (!attached_item_create(&held->attached, &player_points, drawn, folder,
+                            suffix, model, texture))
+    return;
 
-    glm_translate(out, (vec3){tx, ty, tz});
-    glm_rotate(out, glm_rad(cant), (vec3){1, 0, 0});
-    glm_rotate(out, glm_rad(90.0f), (vec3){0, 1, 0});
-    glm_rotate(out, glm_rad(90.0f), (vec3){1, 0, 0});
-    glm_scale_uni(out, scale);
-  } else {
-    glm_rotate(out, glm_rad(90.0f), (vec3){0, 1, 0});
-  }
-
-  mat4 remap, remap_inverse, carried;
-  glm_mat4_identity(remap);
-  glm_rotate(remap, glm_rad(-90.0f), (vec3){1, 0, 0});
-  glm_mat4_identity(remap_inverse);
-  glm_rotate(remap_inverse, glm_rad(90.0f), (vec3){1, 0, 0});
-  glm_mat4_mul(remap, out, carried);
-  glm_mat4_mul(carried, remap_inverse, out);
+  held->drawn = held->attached.point;
+  const PAttachmentPoint *carried = attachment_points_find(&player_points, sheathed);
+  held->sheathed = carried ? *carried : held->drawn;
+  if (sheathed == drawn)
+    glm_mat4_identity(held->sheathed_local);
+  else
+    attached_carry_matrix(big_weapon, held->sheathed_local);
+  player_held_count++;
 }
 
-//the main hand's item goes in the right hand, the off hand's in the left, or on
-//the arm for a shield; redone whenever equipment changes
+//the shoulders on the shoulders, the main hand's item in the right hand, the
+//off hand's in the left, or on the arm for a shield, and the ranged weapon in
+//the right hand; redone whenever equipment changes
 static void sync_player_held_items() {
   for (int i = 0; i < player_held_count; i++)
     attached_release(&player_held[i].attached.model);
   player_held_count = 0;
 
-  for (int slot = PLAYER_SLOT_MAIN_HAND; slot <= PLAYER_SLOT_OFF_HAND; slot++) {
+  //the helm is the Tauren male's own model
+  PlayerEquipSlot *head = &player_equip_slots[PLAYER_SLOT_HEAD];
+  if (head->have_display)
+    add_player_item(ATTACHMENT_HELM, ATTACHMENT_HELM, false, "head", "_tam",
+                    head->display.model, head->display.model_texture);
+
+  PlayerEquipSlot *shoulders = &player_equip_slots[PLAYER_SLOT_SHOULDERS];
+  if (shoulders->have_display) {
+    add_player_item(ATTACHMENT_SHOULDER_LEFT, ATTACHMENT_SHOULDER_LEFT, false,
+                    "shoulder", "", shoulders->display.model,
+                    shoulders->display.model_texture);
+    add_player_item(ATTACHMENT_SHOULDER_RIGHT, ATTACHMENT_SHOULDER_RIGHT, false,
+                    "shoulder", "", shoulders->display.model_right,
+                    shoulders->display.model_texture_right);
+  }
+
+  static const int slots[] = {PLAYER_SLOT_MAIN_HAND, PLAYER_SLOT_OFF_HAND,
+                              PLAYER_SLOT_RANGED};
+  for (size_t i = 0; i < sizeof(slots) / sizeof(slots[0]); i++) {
+    int slot = slots[i];
     PlayerEquipSlot *equip = &player_equip_slots[slot];
     if (!equip->have_display)
       continue;
 
-    bool shield = equip->info.inventory_type == INVTYPE_SHIELD;
+    u32 type = equip->info.inventory_type;
+    bool shield = type == INVTYPE_SHIELD;
     u32 drawn = shield ? ATTACHMENT_SHIELD
-                       : (slot == PLAYER_SLOT_MAIN_HAND ? ATTACHMENT_RIGHT_HAND
-                                                        : ATTACHMENT_LEFT_HAND);
-    PlayerHeldItem *held = &player_held[player_held_count];
-    if (!attached_item_create(&held->attached, &player_points, drawn,
-                              shield ? "shield" : "weapon", "",
-                              &equip->display))
-      continue;
-
-    held->drawn = held->attached.point;
-    const PAttachmentPoint *sheathed = attachment_points_find(
-        &player_points, sheath_point_of(slot, equip->info.inventory_type));
-    held->sheathed = sheathed ? *sheathed : held->drawn;
-    sheathed_local_of(equip->info.inventory_type, held->sheathed_local);
-    player_held_count++;
+                       : (slot == PLAYER_SLOT_OFF_HAND ? ATTACHMENT_LEFT_HAND
+                                                       : ATTACHMENT_RIGHT_HAND);
+    bool big = type == INVTYPE_2HWEAPON || slot == PLAYER_SLOT_RANGED;
+    add_player_item(drawn, sheath_point_of(slot, type), big,
+                    shield ? "shield" : "weapon", "", equip->display.model,
+                    equip->display.model_texture);
   }
 }
 
@@ -325,7 +328,7 @@ static void sync_player_equipment() {
     item_count++;
   }
 
-  apply_equipment_geosets(&player_model, items, item_count);
+  apply_equipment_geosets(&player_model, &PLAYER_APPEARANCE, items, item_count);
 
   PBodyLayers body;
   resolve_tauren_body(&PLAYER_APPEARANCE, &body);

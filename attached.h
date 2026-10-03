@@ -22,6 +22,8 @@
 #define ATTACHMENT_SHIELD 0
 #define ATTACHMENT_RIGHT_HAND 1
 #define ATTACHMENT_LEFT_HAND 2
+#define ATTACHMENT_SHOULDER_RIGHT 5
+#define ATTACHMENT_SHOULDER_LEFT 6
 #define ATTACHMENT_HELM 11
 
 //where a weapon is carried while it is not in the hand: on the back for a big
@@ -84,17 +86,23 @@ typedef struct PAttachedItem {
   mat4 local;
 } PAttachedItem;
 
-#define ATTACHED_ITEMS_MAX 4
+#define ATTACHED_ITEMS_MAX 8
 
-//puts the model an item names at one of points, converting its files the first
-//time one is needed. folder is where under item/objectcomponents they are
-//("head", "weapon", "shield") and suffix what the game adds to the model's
+//puts a model at one of points, converting its files the first time one is
+//needed. model and texture are the game's names for them, as ItemDisplayInfo
+//has them. folder is where under item/objectcomponents they are ("head",
+//"shoulder", "weapon", "shield") and suffix what the game adds to the model's
 //name for a race and sex ("_tam"), empty for none. false if the body has no
-//such point, the item names no model or its files cannot be had, and then
-//nothing is drawn
+//such point, there is no model or texture named or the files cannot be had,
+//and then nothing is drawn
 bool attached_item_create(PAttachedItem *out, const PAttachmentPoints *points,
                           u32 point_id, const char *folder, const char *suffix,
-                          const PItemDisplayInfo *item);
+                          const char *model, const char *texture);
+
+//what turns a weapon carried on the back or a hip into the way it is carried:
+//a big one is stood up and canted across the back, any other turned to point
+//down the leg. set as an item's local matrix while it is carried
+void attached_carry_matrix(bool big_weapon, mat4 out);
 
 //draws the item on a body placed by body_model_mat and posed in body: the
 //body's placement, then the joint of the point as posed this frame, then the
