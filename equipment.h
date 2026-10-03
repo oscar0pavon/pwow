@@ -39,6 +39,21 @@ typedef struct PBodyLayers {
 //face, the scalp of the hair style and the underwear
 void resolve_tauren_male_body(const PAppearance *look, PBodyLayers *out);
 
+//classic InventoryType (vmangos ItemPrototype.h) - which slot a PEquippedItem
+//names, independent of where its own data originally came from (a player's
+//PLAYER_VISIBLE_ITEM index, or a humanoid creature's EquipDisplay slot)
+#define INVTYPE_HEAD 1
+#define INVTYPE_BODY 4 //shirt
+#define INVTYPE_CHEST 5
+#define INVTYPE_WAIST 6
+#define INVTYPE_LEGS 7
+#define INVTYPE_FEET 8
+#define INVTYPE_WRISTS 9
+#define INVTYPE_HANDS 10
+#define INVTYPE_CLOAK 16
+#define INVTYPE_TABARD 19
+#define INVTYPE_ROBE 20
+
 //ItemDisplayInfo.dbc's geoset groups and the six body-region texture names
 //an equipped item carries - resolved once per display id and cached by
 //the caller (PlayerEquipSlot in main.c, HumanoidEquipSlot in creatures.c),

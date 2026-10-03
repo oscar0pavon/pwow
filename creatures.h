@@ -5,14 +5,14 @@
 #include <engine/renderer/vulkan.h>
 #include <wowauth/wowobject.h>
 
-//renders the "simple" (non-humanoid) creatures pe_wowworld_poll() tracks in
-//a PWowObjectState: one whose ExtendedDisplayInfoID is 0 in CreatureDisplayInfo.dbc,
-//meaning its look comes from its own model and texture rather than
-//CreatureDisplayInfoExtra's race/gender/skin/face/hair/equipment - the same
-//pipeline a player character uses, which this does not drive. a humanoid
-//creature is tracked in npc_state like any other but is silently never
-//given an instance here. models/textures must already be converted by
-//prepare_creatures.sh; one that is not is silently skipped too
+//renders the creatures pe_wowworld_poll() tracks in a PWowObjectState. a
+//"simple" one has ExtendedDisplayInfoID 0 in CreatureDisplayInfo.dbc, so its
+//look is its own model and texture. a humanoid has a CreatureDisplayInfoExtra
+//row instead (race/gender/skin/face/hair/equipment) and is dressed through
+//equipment.h like the player; only a Tauren male is drawn so far, any other
+//humanoid is tracked in npc_state but never given an instance. models and
+//textures must already be converted by prepare_creatures.sh and
+//prepare_character.sh; one that is not is silently skipped
 
 //creates the shared skinned shader every creature model draws with. call
 //once, after pe_vk_init (same requirement pe_text_init has)

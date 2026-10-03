@@ -222,21 +222,6 @@ bool resolve_item_display_info(u32 display_info_id, PItemDisplayInfo *out) {
 
 #define COUNT_OF(array) (sizeof(array) / sizeof((array)[0]))
 
-//classic InventoryType (vmangos ItemPrototype.h) - which slot a PEquippedItem
-//names, independent of where its own data originally came from (a player's
-//PLAYER_VISIBLE_ITEM index, or a humanoid creature's EquipDisplay slot)
-#define INVTYPE_HEAD 1
-#define INVTYPE_BODY 4 //shirt
-#define INVTYPE_CHEST 5
-#define INVTYPE_WAIST 6
-#define INVTYPE_LEGS 7
-#define INVTYPE_FEET 8
-#define INVTYPE_WRISTS 9
-#define INVTYPE_HANDS 10
-#define INVTYPE_CLOAK 16
-#define INVTYPE_TABARD 19
-#define INVTYPE_ROBE 20
-
 //geoset_rules.hpp's own bare/base ids (WoWee) - a group's variant 1 (or the
 //named base one) means "none of this", the same convention taurenmale.glb's
 //own export carries
@@ -645,7 +630,7 @@ static const struct {
 
 static void composite_body_layer(PImage *base, const char *path, int dst_x,
                                  int dst_y, int width, int height) {
-  if (path[0] == '\0')
+  if (path[0] == '\0' || access(path, R_OK) != 0)
     return;
 
   PImage layer;
@@ -683,7 +668,8 @@ static void apply_skin_extra(PModel *model, PSkin *skin,
                              const PBodyLayers *body) {
   PImage image;
   ZERO(image);
-  if (body->skin_extra[0] == '\0' || pe_load_image(body->skin_extra, &image) != 0)
+  if (body->skin_extra[0] == '\0' || access(body->skin_extra, R_OK) != 0 ||
+      pe_load_image(body->skin_extra, &image) != 0)
     return;
 
   PTexture texture;

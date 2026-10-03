@@ -11,11 +11,14 @@
 #include <engine/renderer/pipeline.h>
 #include <engine/renderer/shaders.h>
 #include <engine/renderer/uniform_buffer.h>
+#include <engine/renderer/vk_images.h>
 #include <engine/renderer/vk_vertex.h>
 #include <engine/renderer/vulkan.h>
 #include <engine/skeletal.h>
 #include <engine/vertex.h>
 #include <wowauth/wowdbc.h>
+
+#include "equipment.h"
 
 #include <ctype.h>
 #include <float.h>
@@ -29,10 +32,40 @@
 #define CREATURE_DISPLAY_FIELD_EXTENDED 3
 #define CREATURE_DISPLAY_FIELD_TEXTURE0 6
 
+#define CREATURE_EXTRA_DBC_PATH "data/dbc/CreatureDisplayInfoExtra.dbc"
+
+#define CREATURE_EXTRA_FIELD_ID 0
+#define CREATURE_EXTRA_FIELD_RACE 1
+#define CREATURE_EXTRA_FIELD_GENDER 2
+#define CREATURE_EXTRA_FIELD_SKIN 3
+#define CREATURE_EXTRA_FIELD_FACE 4
+#define CREATURE_EXTRA_FIELD_HAIR_STYLE 5
+#define CREATURE_EXTRA_FIELD_HAIR_COLOR 6
+
+#define TAUREN_RACE_ID 6
+#define MALE_GENDER_ID 0
+
+#define HUMANOID_MODEL_PATH "data/character/tauren/male/taurenmale.glb"
+#define HUMANOID_FOOT_OFFSET 0.011f
+
 #define CREATURE_MODEL_FIELD_ID 0
 #define CREATURE_MODEL_FIELD_NAME 2
 
 static PShader creature_shader;
+static PShader humanoid_shader;
+
+//the equipment columns of CreatureDisplayInfoExtra, each an ItemDisplayInfo
+//id (0 for an empty slot), with the InventoryType that slot stands for.
+//shoulders (field 9) are left out: no geoset or texture rule uses them yet
+static const struct {
+  u32 field, inventory_type;
+} EXTRA_EQUIPMENT_SLOTS[] = {
+    {8, INVTYPE_HEAD},   {10, INVTYPE_BODY},  {11, INVTYPE_CHEST},
+    {12, INVTYPE_WAIST}, {13, INVTYPE_LEGS},  {14, INVTYPE_FEET},
+    {15, INVTYPE_WRISTS}, {16, INVTYPE_HANDS}, {17, INVTYPE_TABARD},
+};
+#define EXTRA_EQUIPMENT_SLOT_COUNT \
+  (sizeof(EXTRA_EQUIPMENT_SLOTS) / sizeof(EXTRA_EQUIPMENT_SLOTS[0]))
 
 //---------------------------------------------------------------------------
 //display id -> what to load, cached. tools/resolve_creatures.c re-derives
@@ -43,6 +76,10 @@ static PShader creature_shader;
 typedef struct ResolvedDisplay {
   u32 display_id;
   bool simple;
+  bool humanoid;
+  PAppearance look;
+  PEquippedItem items[EXTRA_EQUIPMENT_SLOT_COUNT];
+  int item_count;
   char glb_path[256];
   char texture_path[256]; //empty: use the glb's own baked-in texture
 } ResolvedDisplay;
@@ -69,6 +106,43 @@ static void lowercase(char *name) {
     *c = (char)tolower((unsigned char)*c);
 }
 
+//a humanoid is only drawn when CreatureDisplayInfoExtra names a Tauren male,
+//the one body converted so far; any other race or gender stays unresolved
+static void resolve_humanoid(ResolvedDisplay *out, u32 extra_id) {
+  PWowDBC extra_dbc;
+  if (!pe_wowdbc_load(CREATURE_EXTRA_DBC_PATH, &extra_dbc))
+    return;
+
+  for (u32 r = 0; r < extra_dbc.record_count; r++) {
+    if (pe_wowdbc_get_u32(&extra_dbc, r, CREATURE_EXTRA_FIELD_ID) != extra_id)
+      continue;
+    if (pe_wowdbc_get_u32(&extra_dbc, r, CREATURE_EXTRA_FIELD_RACE) != TAUREN_RACE_ID ||
+        pe_wowdbc_get_u32(&extra_dbc, r, CREATURE_EXTRA_FIELD_GENDER) != MALE_GENDER_ID)
+      break;
+
+    out->look.skin = pe_wowdbc_get_u32(&extra_dbc, r, CREATURE_EXTRA_FIELD_SKIN);
+    out->look.face = pe_wowdbc_get_u32(&extra_dbc, r, CREATURE_EXTRA_FIELD_FACE);
+    out->look.hair_style =
+        pe_wowdbc_get_u32(&extra_dbc, r, CREATURE_EXTRA_FIELD_HAIR_STYLE);
+    out->look.hair_color =
+        pe_wowdbc_get_u32(&extra_dbc, r, CREATURE_EXTRA_FIELD_HAIR_COLOR);
+
+    for (size_t slot = 0; slot < EXTRA_EQUIPMENT_SLOT_COUNT; slot++) {
+      u32 display_id =
+          pe_wowdbc_get_u32(&extra_dbc, r, EXTRA_EQUIPMENT_SLOTS[slot].field);
+      PEquippedItem *item = &out->items[out->item_count];
+      if (display_id == 0 || !resolve_item_display_info(display_id, &item->display))
+        continue;
+      item->inventory_type = EXTRA_EQUIPMENT_SLOTS[slot].inventory_type;
+      out->item_count++;
+    }
+    out->humanoid = true;
+    break;
+  }
+
+  pe_wowdbc_free(&extra_dbc);
+}
+
 static ResolvedDisplay *resolve_display(u32 display_id) {
   for (int i = 0; i < resolved_display_count; i++)
     if (resolved_displays[i].display_id == display_id)
@@ -92,10 +166,11 @@ static ResolvedDisplay *resolve_display(u32 display_id) {
   for (u32 r = 0; r < display_dbc.record_count; r++) {
     if (pe_wowdbc_get_u32(&display_dbc, r, CREATURE_DISPLAY_FIELD_ID) != display_id)
       continue;
-    //nonzero: a humanoid, driven by CreatureDisplayInfoExtra's race/gender/
-    //skin/face/hair/equipment - the player-character pipeline, not this one
-    if (pe_wowdbc_get_u32(&display_dbc, r, CREATURE_DISPLAY_FIELD_EXTENDED) != 0)
+    u32 extra_id = pe_wowdbc_get_u32(&display_dbc, r, CREATURE_DISPLAY_FIELD_EXTENDED);
+    if (extra_id != 0) {
+      resolve_humanoid(out, extra_id);
       break;
+    }
 
     u32 model_id =
         pe_wowdbc_get_u32(&display_dbc, r, CREATURE_DISPLAY_FIELD_MODEL_ID);
@@ -164,6 +239,12 @@ static ResolvedDisplay *resolve_display(u32 display_id) {
 #define CREATURE_WALK_ANIMATION "Walk"
 #define CREATURE_RUN_ANIMATION "Run"
 
+typedef struct ClipSet {
+  char idle[48];
+  char walk[48];
+  char run[48];
+} ClipSet;
+
 typedef struct CreatureTemplate {
   char glb_path[256];
   PModel model;
@@ -173,9 +254,7 @@ typedef struct CreatureTemplate {
   //instance (see CreatureInstance below), and idle/walk/run_animation name
   //the clips each instance switches between
   PSkin skin;
-  char idle_animation[48];
-  char walk_animation[48];
-  char run_animation[48];
+  ClipSet clips;
   float foot_offset;
 } CreatureTemplate;
 
@@ -213,6 +292,36 @@ static bool has_animation(PSkin *skin, const char *name) {
       return true;
   }
   return false;
+}
+
+//not every species has a clip literally named "Stand" (confirmed live: one
+//did not, and silently rendered nothing, before the pe_anim_nodes_update()
+//seed existed) - fall back to whatever its first clip actually is instead of
+//leaving every instance static. the same idea for each locomotion clip:
+//prefer the one the wire asked for, fall back to the other gait if that is
+//all the species has, and to idle if it has neither - still moving on
+//screen, just not visibly walking or running, rather than a T-pose
+static void resolve_clips(PSkin *skin, ClipSet *clips) {
+  const char *idle = CREATURE_IDLE_ANIMATION;
+  if (skin->animations.count > 0 && !has_animation(skin, idle)) {
+    PAnimation *first = array_get(&skin->animations, 0);
+    idle = first->name;
+  }
+  snprintf(clips->idle, sizeof(clips->idle), "%s", idle);
+
+  const char *walk = clips->idle;
+  if (has_animation(skin, CREATURE_WALK_ANIMATION))
+    walk = CREATURE_WALK_ANIMATION;
+  else if (has_animation(skin, CREATURE_RUN_ANIMATION))
+    walk = CREATURE_RUN_ANIMATION;
+  snprintf(clips->walk, sizeof(clips->walk), "%s", walk);
+
+  const char *run = clips->idle;
+  if (has_animation(skin, CREATURE_RUN_ANIMATION))
+    run = CREATURE_RUN_ANIMATION;
+  else if (has_animation(skin, CREATURE_WALK_ANIMATION))
+    run = CREATURE_WALK_ANIMATION;
+  snprintf(clips->run, sizeof(clips->run), "%s", run);
 }
 
 static CreatureTemplate *find_or_load_template(const ResolvedDisplay *resolved) {
@@ -264,39 +373,7 @@ static CreatureTemplate *find_or_load_template(const ResolvedDisplay *resolved) 
   if (t->skin.joints.count > 0)
     pe_anim_nodes_update(&t->skin);
 
-  //not every species has a clip literally named "Stand" (confirmed live:
-  //one did not, and silently rendered nothing per the paragraph above,
-  //before the pe_anim_nodes_update() seed above existed) - fall back to
-  //whatever its first clip actually is instead of leaving every instance
-  //static when that happens, rather than hardcoding every species' own
-  //idle clip name. recorded here, not played: this is the template, never
-  //drawn or posed itself - each instance plays it on its own copy, in
-  //creatures_sync()
-  const char *idle_animation = CREATURE_IDLE_ANIMATION;
-  if (t->skin.animations.count > 0 && !has_animation(&t->skin, idle_animation)) {
-    PAnimation *first = array_get(&t->skin.animations, 0);
-    idle_animation = first->name;
-  }
-  snprintf(t->idle_animation, sizeof(t->idle_animation), "%s", idle_animation);
-
-  //same fallback idea for each locomotion clip: prefer the one the wire
-  //actually asked for, fall back to the other gait if that's all the
-  //species has, and fall back to idle_animation itself if it has neither -
-  //still moving on screen, just not visibly walking or running, rather than
-  //a T-pose or a stale clip
-  const char *walk_animation = t->idle_animation;
-  if (has_animation(&t->skin, CREATURE_WALK_ANIMATION))
-    walk_animation = CREATURE_WALK_ANIMATION;
-  else if (has_animation(&t->skin, CREATURE_RUN_ANIMATION))
-    walk_animation = CREATURE_RUN_ANIMATION;
-  snprintf(t->walk_animation, sizeof(t->walk_animation), "%s", walk_animation);
-
-  const char *run_animation = t->idle_animation;
-  if (has_animation(&t->skin, CREATURE_RUN_ANIMATION))
-    run_animation = CREATURE_RUN_ANIMATION;
-  else if (has_animation(&t->skin, CREATURE_WALK_ANIMATION))
-    run_animation = CREATURE_WALK_ANIMATION;
-  snprintf(t->run_animation, sizeof(t->run_animation), "%s", run_animation);
+  resolve_clips(&t->skin, &t->clips);
 
   return t;
 }
@@ -315,45 +392,61 @@ typedef struct CreatureInstance {
   //than one clip per species, in different states entirely) instead of
   //being locked to one shared pose
   PSkin skin;
+  ClipSet clips;
   float foot_offset;
+  //a humanoid has its own vertex/index buffers and composited texture, which
+  //equipment rewrites per creature; a simple creature shares its template's
+  bool owns_model;
   bool used;
 } CreatureInstance;
 
 #define CREATURE_INSTANCES_MAX 32
 static CreatureInstance creature_instances[CREATURE_INSTANCES_MAX];
 
-//only what an instance actually owns - never pe_clean_model() (engine/
-//model.c), which unconditionally frees vertex_buffer.memory/index_buffer.
-//memory. pe_vk_model_instance() shares those with its template (and every
-//other instance of the same species) by design, so that would free
-//geometry still in use elsewhere. skin's shader_storage_buffers_memory is
-//this instance's own (pe_vk_skin_instance() + pe_vk_skin_create_storage_
-//buffers()), never the template's, so freeing it here is the same kind of
-//instance-only cleanup as the uniform buffers below - the joints/animations
-//arrays it also owns are arena memory with no free, same as everything else
-//CPU-side here
-static void release_creature_instance(PModel *model, PSkin *skin) {
+//only what an instance actually owns. a simple creature shares its vertex/
+//index buffers and texture with its template (and every other instance of
+//the species), so pe_clean_model(), which frees the buffers and the shader,
+//is never an option; a humanoid owns those too and gives back everything
+//but the shader. skin's shader_storage_buffers_memory is the instance's own
+//(pe_vk_skin_instance()/pe_vk_load_skin() + pe_vk_skin_create_storage_
+//buffers()); the joints/animations arrays are arena memory with no free,
+//same as everything else CPU-side here
+static void release_creature_instance(CreatureInstance *inst) {
+  PModel *model = &inst->model;
+  vkDeviceWaitIdle(vk_device);
+
   for (int i = 0; i < model->uniform_buffers_memory.count; i++) {
     VkDeviceMemory *memory = array_get(&model->uniform_buffers_memory, i);
     vkFreeMemory(vk_device, *memory, NULL);
   }
   vkDestroyDescriptorPool(vk_device, model->descriptor_pool, NULL);
 
-  for (int i = 0; i < skin->shader_storage_buffers_memory.count; i++) {
-    VkDeviceMemory *memory = array_get(&skin->shader_storage_buffers_memory, i);
+  for (int i = 0; i < inst->skin.shader_storage_buffers_memory.count; i++) {
+    VkDeviceMemory *memory =
+        array_get(&inst->skin.shader_storage_buffers_memory, i);
     vkFreeMemory(vk_device, *memory, NULL);
   }
+
+  if (!inst->owns_model)
+    return;
+
+  if (model->has_extra_texture) {
+    vkDestroyDescriptorPool(vk_device, model->extra_descriptor_pool, NULL);
+    pe_vk_clean_image(&model->extra_texture);
+  }
+  pe_vk_clean_image(&model->texture);
+  vkFreeMemory(vk_device, model->index_buffer.memory, NULL);
+  vkFreeMemory(vk_device, model->vertex_buffer.memory, NULL);
 }
 
-void creatures_init(void) {
+static void create_creature_shader(PShader *out_shader, const char *fragment_path) {
   PCreateShaderInfo shader_info;
   ZERO(shader_info);
-  shader_info.out_shader = &creature_shader;
+  shader_info.out_shader = out_shader;
   //same pairing player_load() uses: file_skinned_spv does the joint-matrix
-  //skinning, file_diffuse_frag_spv samples a texture - creatures were drawn
-  //unposed (plain diffuse) before, which is why they never animated
+  //skinning, the fragment shader samples a texture
   shader_info.vertex_path = file_skinned_spv;
-  shader_info.fragment_path = file_diffuse_frag_spv;
+  shader_info.fragment_path = fragment_path;
   shader_info.layout = pe_vk_pipeline_layout_skinned;
 
   //vertex_input left NULL gets the engine's default (position + uv only,
@@ -378,6 +471,65 @@ void creatures_init(void) {
   pe_vk_create_shader(&shader_info);
 }
 
+void creatures_init(void) {
+  create_creature_shader(&creature_shader, file_diffuse_frag_spv);
+  //a humanoid's hair, mane and cloth are alpha-cut, as the player's are
+  create_creature_shader(&humanoid_shader, file_diffuse_cutout_frag_spv);
+}
+
+//seeds a real pose immediately: skinned.vert's weighted sum of joint matrices
+//has no safe zero fallback, and a fresh storage buffer starts zeroed
+static void seed_pose(CreatureInstance *inst) {
+  if (inst->skin.joints.count > 0)
+    pe_anim_nodes_update(&inst->skin);
+}
+
+static bool create_simple_instance(CreatureInstance *inst,
+                                   const ResolvedDisplay *resolved) {
+  CreatureTemplate *template = find_or_load_template(resolved);
+  if (!template)
+    return false;
+
+  pe_vk_skin_instance(&inst->skin, &template->skin);
+  pe_vk_skin_create_storage_buffers(&inst->skin);
+  pe_vk_model_instance_skinned(&inst->model, &template->model, &inst->skin);
+  seed_pose(inst);
+
+  inst->clips = template->clips;
+  inst->foot_offset = template->foot_offset;
+  inst->owns_model = false;
+  return true;
+}
+
+//loads the Tauren male body once per creature, the way player_load() does,
+//and dresses it from its CreatureDisplayInfoExtra row: equipment rewrites
+//the model's geosets and texture in place, so it cannot be an instance
+//sharing its buffers with another creature's
+static bool create_humanoid_instance(CreatureInstance *inst,
+                                     const ResolvedDisplay *resolved) {
+  pe_vk_load_skin(&inst->skin, &inst->model, HUMANOID_MODEL_PATH);
+  inst->model.shader = humanoid_shader;
+
+  PBodyLayers body;
+  resolve_tauren_male_body(&resolved->look, &body);
+  pe_load_texture(body.skin, &inst->model.texture);
+
+  pe_vk_create_descriptor_sets(&inst->model, pe_vk_descriptor_set_layout_skinned,
+                               &main_render_target);
+  pe_vk_skin_create_storage_buffers(&inst->skin);
+  pe_vk_descriptor_skinned_update(&inst->model, &inst->skin, &main_render_target);
+
+  apply_equipment_geosets(&inst->model, resolved->items, resolved->item_count);
+  apply_equipment_texture(&inst->model, &inst->skin, &body, resolved->items,
+                          resolved->item_count);
+  seed_pose(inst);
+
+  resolve_clips(&inst->skin, &inst->clips);
+  inst->foot_offset = HUMANOID_FOOT_OFFSET;
+  inst->owns_model = true;
+  return true;
+}
+
 void creatures_sync(const PWowObjectState *npc_state) {
   bool touched[CREATURE_INSTANCES_MAX];
   memset(touched, 0, sizeof(touched));
@@ -385,15 +537,7 @@ void creatures_sync(const PWowObjectState *npc_state) {
   for (int i = 0; i < npc_state->count; i++) {
     const PWowCreature *creature = &npc_state->creatures[i];
     ResolvedDisplay *resolved = resolve_display(creature->display_id);
-    if (!resolved || !resolved->simple)
-      continue;
-
-    //cheap once a species is loaded - a strcmp scan over at most
-    //CREATURE_TEMPLATES_MAX entries - and every tracked creature needs its
-    //template every frame now, to know which clip name "moving" means for
-    //its own species, not just the first time it is seen
-    CreatureTemplate *template = find_or_load_template(resolved);
-    if (!template)
+    if (!resolved || !(resolved->simple || resolved->humanoid))
       continue;
 
     int slot = -1;
@@ -415,20 +559,13 @@ void creatures_sync(const PWowObjectState *npc_state) {
         continue; //pool full - this creature waits for a slot to free up
 
       CreatureInstance *inst = &creature_instances[slot];
-      pe_vk_skin_instance(&inst->skin, &template->skin);
-      pe_vk_skin_create_storage_buffers(&inst->skin);
-      pe_vk_model_instance_skinned(&inst->model, &template->model,
-                                   &inst->skin);
-
-      //seed a real pose immediately, same reason find_or_load_template()
-      //seeds the template's - skinned.vert's weighted sum of joint matrices
-      //has no safe zero fallback, and this instance's own storage buffer
-      //starts zeroed regardless of what the template's looked like
-      if (inst->skin.joints.count > 0)
-        pe_anim_nodes_update(&inst->skin);
+      bool created = resolved->humanoid
+                         ? create_humanoid_instance(inst, resolved)
+                         : create_simple_instance(inst, resolved);
+      if (!created)
+        continue;
 
       inst->guid = creature->guid;
-      inst->foot_offset = template->foot_offset;
       inst->used = true;
     }
 
@@ -441,10 +578,9 @@ void creatures_sync(const PWowObjectState *npc_state) {
     //PRE_WOTLK_RUNMODE bit off the wire (wowobject.h), not a guess
     CreatureInstance *inst = &creature_instances[slot];
     if (inst->skin.animations.count > 0) {
-      const char *target = template->idle_animation;
+      const char *target = inst->clips.idle;
       if (creature->moving)
-        target = creature->walking ? template->walk_animation
-                                   : template->run_animation;
+        target = creature->walking ? inst->clips.walk : inst->clips.run;
       play_animation_by_name(&inst->skin, target, true);
     }
 
@@ -467,8 +603,7 @@ void creatures_sync(const PWowObjectState *npc_state) {
 
   for (int s = 0; s < CREATURE_INSTANCES_MAX; s++) {
     if (creature_instances[s].used && !touched[s]) {
-      release_creature_instance(&creature_instances[s].model,
-                                &creature_instances[s].skin);
+      release_creature_instance(&creature_instances[s]);
       creature_instances[s].used = false;
     }
   }
