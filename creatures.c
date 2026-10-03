@@ -44,13 +44,19 @@
 
 #define TAUREN_RACE_ID 6
 
-#define HUMANOID_FOOT_OFFSET 0.011f
 
 #define CREATURE_MODEL_FIELD_ID 0
 #define CREATURE_MODEL_FIELD_NAME 2
 
 static PShader creature_shader;
 static PShader humanoid_shader;
+
+//how far each body's lowest vertex sits below its root bone in the Stand pose,
+//measured by skinning the mesh through the clip's first keyframe
+static const float HUMANOID_FOOT_OFFSETS[] = {
+    [SEX_MALE] = 0.011f,
+    [SEX_FEMALE] = 0.004f,
+};
 
 static const char *const HUMANOID_MODEL_PATHS[] = {
     [SEX_MALE] = "data/character/tauren/male/taurenmale.glb",
@@ -567,7 +573,7 @@ static bool create_humanoid_instance(CreatureInstance *inst,
   seed_pose(inst);
 
   inst->clips = template->clips;
-  inst->foot_offset = HUMANOID_FOOT_OFFSET;
+  inst->foot_offset = HUMANOID_FOOT_OFFSETS[resolved->look.sex];
   inst->dressed = true;
   return true;
 }
