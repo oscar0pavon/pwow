@@ -95,10 +95,10 @@ typedef struct PEquippedItem {
 //(eraseGroup/pickGeoset/equippedGeoset and the per-InventoryType group
 //mapping). helm/shoulder model attachment, weapons and belt/tabard art are
 //out of scope - only the geoset selection itself is ported. safe to call
-//more than once on the same model (an equipment change), but never on a
-//model whose vertex/index buffers are shared with another still-live model
-//(pe_vk_model_instance*() instances of the same template) - see
-//pe_model_set_active_geosets()'s own doc comment in pengine
+//more than once on the same model (an equipment change). it replaces and
+//destroys the model's index buffer, so one shared with a template or another
+//instance (pe_vk_model_instance*()) has to be given a copy of its own first -
+//see pe_model_set_active_geosets()'s own doc comment in pengine
 void apply_equipment_geosets(PModel *model, const PEquippedItem *items,
                              int count);
 
@@ -106,9 +106,8 @@ void apply_equipment_geosets(PModel *model, const PEquippedItem *items,
 //.blp converted to a data/ png at runtime, the first time a given one is
 //needed - see resolve_item_region_texture() in equipment.c) onto one
 //256x256 texture and swaps it into model, rewriting skin's descriptor set
-//to point at it. same "never on a shared model" restriction as
-//apply_equipment_geosets() above, for the same reason (destroy-and-
-//recreate of model->texture, not an in-place update)
+//to point at it. it destroys the texture it finds in model->texture, so an
+//instance has to hold a texture of its own there first, not its template's
 void apply_equipment_texture(PModel *model, PSkin *skin,
                              const PBodyLayers *body,
                              const PEquippedItem *items, int count);

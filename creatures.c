@@ -399,20 +399,19 @@ typedef struct CreatureInstance {
   PSkin skin;
   ClipSet clips;
   float foot_offset;
-  //a humanoid has its own vertex/index buffers and composited texture, which
+  //a humanoid has its own index buffer and composited texture, which
   //equipment rewrites per creature; a simple creature shares its template's
-  bool owns_model;
+  bool dressed;
   bool used;
 } CreatureInstance;
 
 #define CREATURE_INSTANCES_MAX 32
 static CreatureInstance creature_instances[CREATURE_INSTANCES_MAX];
 
-//only what an instance actually owns. a simple creature shares its vertex/
-//index buffers and texture with its template (and every other instance of
-//the species), so pe_clean_model(), which frees the buffers and the shader,
-//is never an option; a humanoid owns those too and gives back everything
-//but the shader. skin's shader_storage_buffers_memory is the instance's own
+//only what an instance actually owns. every instance shares its vertex
+//buffer with its template, and a simple creature its index buffer and texture
+//too, so pe_clean_model(), which frees the buffers and the shader, is never
+//an option; a humanoid owns its index buffer and texture and gives those back. skin's shader_storage_buffers_memory is the instance's own
 //(pe_vk_skin_instance()/pe_vk_load_skin() + pe_vk_skin_create_storage_
 //buffers()); the joints/animations arrays are arena memory with no free,
 //same as everything else CPU-side here
@@ -432,7 +431,7 @@ static void release_creature_instance(CreatureInstance *inst) {
     vkFreeMemory(vk_device, *memory, NULL);
   }
 
-  if (!inst->owns_model)
+  if (!inst->dressed)
     return;
 
   if (model->has_extra_texture) {
@@ -441,7 +440,6 @@ static void release_creature_instance(CreatureInstance *inst) {
   }
   pe_vk_clean_image(&model->texture);
   vkFreeMemory(vk_device, model->index_buffer.memory, NULL);
-  vkFreeMemory(vk_device, model->vertex_buffer.memory, NULL);
 }
 
 static void create_creature_shader(PShader *out_shader, const char *fragment_path) {
@@ -502,37 +500,75 @@ static bool create_simple_instance(CreatureInstance *inst,
 
   inst->clips = template->clips;
   inst->foot_offset = template->foot_offset;
-  inst->owns_model = false;
+  inst->dressed = false;
   return true;
 }
 
-//loads the Tauren body of the creature's sex once per creature, the way player_load() does,
-//and dresses it from its CreatureDisplayInfoExtra row: equipment rewrites
-//the model's geosets and texture in place, so it cannot be an instance
-//sharing its buffers with another creature's
+//one loaded body per sex, shared by every humanoid of it: only the mesh,
+//joint topology and clips are read from it, never drawn or dressed itself
+typedef struct HumanoidTemplate {
+  bool loaded;
+  PModel model;
+  PSkin skin;
+  ClipSet clips;
+} HumanoidTemplate;
+
+static HumanoidTemplate humanoid_templates[SEX_FEMALE + 1];
+
+static HumanoidTemplate *find_or_load_humanoid_template(u8 sex) {
+  HumanoidTemplate *template = &humanoid_templates[sex];
+  if (template->loaded)
+    return template;
+
+  pe_vk_load_skin(&template->skin, &template->model, HUMANOID_MODEL_PATHS[sex]);
+  template->model.shader = humanoid_shader;
+
+  //an instance copies this texture and binds it into its descriptor sets as
+  //it is made, so the template needs a real one, though no instance keeps it
+  PAppearance default_look = {.sex = sex};
+  char skin_path[512];
+  resolve_tauren_skin_path(&default_look, skin_path, sizeof(skin_path));
+  pe_load_texture(skin_path, &template->model.texture);
+
+  resolve_clips(&template->skin, &template->clips);
+  template->loaded = true;
+  return template;
+}
+
+//apply_equipment_geosets() replaces the index buffer it finds and destroys
+//the old one, which on an instance is its template's: copy it first, so what
+//gets destroyed is the instance's own
+static void give_own_index_buffer(PModel *model) {
+  model->index_buffer = pe_vk_create_buffer(model->index_array.bytes_size,
+                                            model->index_array.data,
+                                            VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
+}
+
+//an instance of its sex's body, dressed from its CreatureDisplayInfoExtra
+//row: equipment rewrites a model's index buffer and texture in place, so
+//those two are the instance's own, loaded before they are replaced since
+//apply_equipment_texture() destroys the texture it finds
 static bool create_humanoid_instance(CreatureInstance *inst,
                                      const ResolvedDisplay *resolved) {
-  pe_vk_load_skin(&inst->skin, &inst->model,
-                  HUMANOID_MODEL_PATHS[resolved->look.sex]);
-  inst->model.shader = humanoid_shader;
+  HumanoidTemplate *template = find_or_load_humanoid_template(resolved->look.sex);
+
+  pe_vk_skin_instance(&inst->skin, &template->skin);
+  pe_vk_skin_create_storage_buffers(&inst->skin);
+  pe_vk_model_instance_skinned(&inst->model, &template->model, &inst->skin);
 
   PBodyLayers body;
   resolve_tauren_body(&resolved->look, &body);
   pe_load_texture(body.skin, &inst->model.texture);
-
-  pe_vk_create_descriptor_sets(&inst->model, pe_vk_descriptor_set_layout_skinned,
-                               &main_render_target);
-  pe_vk_skin_create_storage_buffers(&inst->skin);
-  pe_vk_descriptor_skinned_update(&inst->model, &inst->skin, &main_render_target);
+  give_own_index_buffer(&inst->model);
 
   apply_equipment_geosets(&inst->model, resolved->items, resolved->item_count);
   apply_equipment_texture(&inst->model, &inst->skin, &body, resolved->items,
                           resolved->item_count);
   seed_pose(inst);
 
-  resolve_clips(&inst->skin, &inst->clips);
+  inst->clips = template->clips;
   inst->foot_offset = HUMANOID_FOOT_OFFSET;
-  inst->owns_model = true;
+  inst->dressed = true;
   return true;
 }
 
