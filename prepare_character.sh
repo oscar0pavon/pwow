@@ -19,7 +19,7 @@ out=$here/data
 mkdir -p "$out/dbc"
 
 for model in character/tauren/male/taurenmale character/tauren/female/taurenfemale; do
-  if [ ! -f "$out/$model.glb" ]; then
+  if [ ! -f "$out/$model.glb" ] || [ ! -f "$out/$model.att" ]; then
     "$here/m22gltf" "$GAME_DATA" "$model.m2" "$out" "$DBC_SOURCE/AnimationData.dbc" > /dev/null
   fi
 done

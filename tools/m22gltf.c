@@ -60,6 +60,20 @@
 #define TRACK_TIMESTAMPS 12
 #define TRACK_VALUES 20
 
+//INFO the attachment points a piece of gear rides on (the helm, the hands, the
+//shoulders): an id, the bone it follows and a position in the model's own
+//space. a record is 48 bytes in a classic model, the generic docs' 4 + 2 + 2
+//+ 12 plus a 28 byte track for "enabled", like the bone tracks above. found
+//the same way, by what fits: at 0x104 taurenmale.m2 has 34 of them whose
+//bone is in range for every record and whose ids run 0 to 36, helm among
+//them as 11 on a bone of the head at the top of the skull, where 40 and 36
+//byte records score 13 and 17 of 34
+#define HEADER_ATTACHMENTS 0x104
+#define ATTACHMENT_SIZE 48
+#define ATTACHMENT_ID 0
+#define ATTACHMENT_BONE 4
+#define ATTACHMENT_POSITION 8
+
 #define VERTEX_SIZE 48
 #define VERTEX_POSITION 0
 #define VERTEX_BONE_WEIGHTS 12
@@ -201,6 +215,16 @@ static uint32_t batch_count;
 
 static Bone bones[BONES_MAX];
 static uint32_t bone_count;
+
+typedef struct Attachment {
+  uint32_t id;
+  uint32_t bone;
+  float position[3];
+} Attachment;
+
+#define ATTACHMENTS_MAX 64
+static Attachment attachments[ATTACHMENTS_MAX];
+static uint32_t attachment_count;
 
 //one per sub animation, in the same order the bone tracks' ranges count
 //them: id looks a name up in AnimationData.dbc, variation is which one of a
@@ -603,6 +627,33 @@ static int read_bones(void) {
   return 0;
 }
 
+//positions are remapped like the vertices and pivots, so a consumer can put
+//the joint matrix of the bone and a translation by position together, in the
+//same axes the mesh is in
+static int read_attachments(void) {
+  uint32_t count;
+  const uint8_t *records;
+  if (read_array(HEADER_ATTACHMENTS, ATTACHMENT_SIZE, &count, &records) != 0)
+    return 1;
+  if (count > ATTACHMENTS_MAX)
+    return fail("the model has more attachment points than fit");
+
+  attachment_count = count;
+  for (uint32_t i = 0; i < count; i++) {
+    const uint8_t *record = records + (size_t)i * ATTACHMENT_SIZE;
+    Attachment *attachment = &attachments[i];
+
+    attachment->id = read_u32(record + ATTACHMENT_ID);
+    attachment->bone = read_u16(record + ATTACHMENT_BONE);
+    if (attachment->bone >= bone_count)
+      return fail("an attachment point follows a bone that is not there");
+
+    remap_axis((const float *)(record + ATTACHMENT_POSITION),
+               attachment->position);
+  }
+  return 0;
+}
+
 static int check_vertex_bones(void) {
   for (uint32_t i = 0; i < vertex_count; i++) {
     const uint8_t *vertex = vertices + i * VERTEX_SIZE;
@@ -617,7 +668,7 @@ static int check_vertex_bones(void) {
 }
 
 static int read_model(void) {
-  if (model_size < 0x104 || memcmp(model, M2_MAGIC, 4) != 0)
+  if (model_size < HEADER_ATTACHMENTS + 8 || memcmp(model, M2_MAGIC, 4) != 0)
     return fail("not a model file");
   if (read_u32(model + 4) != M2_VANILLA_VERSION)
     return fail("not a classic model, whose version is 256");
@@ -632,7 +683,8 @@ static int read_model(void) {
     return EXIT_NOTHING_TO_DRAW;
   }
 
-  if (read_bones() != 0 || read_sequences() != 0 || check_vertex_bones() != 0)
+  if (read_bones() != 0 || read_attachments() != 0 || read_sequences() != 0 ||
+      check_vertex_bones() != 0)
     return 1;
 
   uint32_t lookup_count, triangle_count, submesh_count, batch_records;
@@ -1224,6 +1276,22 @@ static uint8_t *read_model_file(const char *directory, const char *stem) {
   return NULL;
 }
 
+//one line to an attachment point: its id, the bone it follows (an index into
+//the glb's joints) and its position
+static int write_attachments(const char *path) {
+  FILE *file = fopen(path, "w");
+  if (file == NULL)
+    return fail("can't write the attachment points");
+
+  for (uint32_t i = 0; i < attachment_count; i++)
+    fprintf(file, "%u %u %.9g %.9g %.9g\n", attachments[i].id,
+            attachments[i].bone, attachments[i].position[0],
+            attachments[i].position[1], attachments[i].position[2]);
+
+  fclose(file);
+  return 0;
+}
+
 int main(int argc, char **argv) {
   if (argc != 4 && argc != 5) {
     fprintf(stderr,
@@ -1239,7 +1307,10 @@ int main(int argc, char **argv) {
             "past the sequences the model names, it is just 'anim_<n>'. "
             "prints the PNG path each texture is to be converted to, as "
             "'texture <png>', same as m22wwb. exits with 3, and writes "
-            "nothing, for a model with nothing in it to draw\n");
+            "nothing, for a model with nothing in it to draw. also writes "
+            "<output>/<path>.att, a line to each attachment point: its id, "
+            "the index of the joint it follows and its position, in the "
+            "glb's axes\n");
     return 2;
   }
 
@@ -1274,6 +1345,12 @@ int main(int argc, char **argv) {
     return fail("can't make the output directory");
 
   write_gltf(out_path);
+
+  char attachments_path[PATH_MAX];
+  snprintf(attachments_path, sizeof(attachments_path), "%s/%s.att", argv[3],
+           stem);
+  if (write_attachments(attachments_path) != 0)
+    return 1;
 
   for (uint32_t i = 0; i < texture_count; i++)
     printf("texture %s\n", textures[i]);
