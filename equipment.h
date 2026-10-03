@@ -27,9 +27,9 @@ typedef struct PAppearance {
 } PAppearance;
 
 //the data/ pngs a body is composited from, an empty string for a layer the
-//character does not have: the skin is the whole atlas, the rest land on it
+//character does not have: the skin is the whole atlas and its extra the mane and horns sheet, the rest land on it
 typedef struct PBodyLayers {
-  char skin[512];
+  char skin[512], skin_extra[512];
   char face_lower[512], face_upper[512];
   char scalp_lower[512], scalp_upper[512];
   char pelvis[512];

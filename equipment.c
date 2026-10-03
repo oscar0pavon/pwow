@@ -101,7 +101,8 @@ void resolve_tauren_male_body(const PAppearance *look, PBodyLayers *out) {
   if (!pe_wowdbc_load(CHARSECTIONS_DBC_PATH, &dbc))
     return;
 
-  bool found_face = false, found_hair = false, found_underwear = false;
+  bool found_skin = false, found_face = false, found_hair = false,
+       found_underwear = false;
   for (u32 r = 0; r < dbc.record_count; r++) {
     if (pe_wowdbc_get_u32(&dbc, r, CHARSECTIONS_FIELD_RACE) != TAUREN_RACE_ID ||
         pe_wowdbc_get_u32(&dbc, r, CHARSECTIONS_FIELD_SEX) != MALE_SEX_ID)
@@ -111,7 +112,12 @@ void resolve_tauren_male_body(const PAppearance *look, PBodyLayers *out) {
     u32 variation = pe_wowdbc_get_u32(&dbc, r, CHARSECTIONS_FIELD_VARIATION_INDEX);
     u32 color = pe_wowdbc_get_u32(&dbc, r, CHARSECTIONS_FIELD_COLOR_INDEX);
 
-    if (section == CHARSECTIONS_SECTION_FACE && !found_face &&
+    if (section == CHARSECTIONS_SECTION_SKIN && !found_skin &&
+        color == look->skin) {
+      body_layer_path(&dbc, r, CHARSECTIONS_FIELD_TEXTURE2, out->skin_extra,
+                      sizeof(out->skin_extra));
+      found_skin = true;
+    } else if (section == CHARSECTIONS_SECTION_FACE && !found_face &&
         variation == look->face && color == look->skin) {
       body_layer_path(&dbc, r, CHARSECTIONS_FIELD_TEXTURE1, out->face_lower,
                       sizeof(out->face_lower));
@@ -671,6 +677,24 @@ static void composite_body(PImage *base, const PBodyLayers *body) {
                        PELVIS_REGION.height);
 }
 
+//the model's texture type 8, which its facial hair and mane geosets draw
+//from: the skin row's own second texture, the mane and horns sheet
+static void apply_skin_extra(PModel *model, PSkin *skin,
+                             const PBodyLayers *body) {
+  PImage image;
+  ZERO(image);
+  if (body->skin_extra[0] == '\0' || pe_load_image(body->skin_extra, &image) != 0)
+    return;
+
+  PTexture texture;
+  ZERO(texture);
+  pe_vk_create_texture_from_image(&texture, &image);
+  texture.gpu_loaded = true;
+  free_image(&image);
+
+  pe_vk_model_set_extra_texture(model, skin, texture);
+}
+
 void apply_equipment_texture(PModel *model, PSkin *skin,
                              const PBodyLayers *body,
                              const PEquippedItem *items, int count) {
@@ -697,4 +721,6 @@ void apply_equipment_texture(PModel *model, PSkin *skin,
   pe_vk_clean_image(&model->texture);
   model->texture = new_texture;
   pe_vk_descriptor_skinned_update(model, skin, &main_render_target);
+
+  apply_skin_extra(model, skin, body);
 }

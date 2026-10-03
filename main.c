@@ -310,7 +310,7 @@ static void player_load() {
   ZERO(shader_info);
   shader_info.out_shader = &player_shader;
   shader_info.vertex_path = file_skinned_spv;
-  shader_info.fragment_path = file_diffuse_frag_spv;
+  shader_info.fragment_path = file_diffuse_cutout_frag_spv;
   shader_info.layout = pe_vk_pipeline_layout_skinned;
 
   //the engine's own default vertex input (used when this is left NULL) only

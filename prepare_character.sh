@@ -59,6 +59,7 @@ for id in $(seq 0 18); do
     convert "$(printf "character/tauren/male/taurenmalefaceupper%02d_%02d.png" "$face" "$id")"
   done
   convert "$(printf "character/tauren/male/taurenmalenakedpelvisskin00_%02d.png" "$id")"
+  convert "$(printf "character/tauren/male/taurenmaleskin00_%02d_extra.png" "$id")"
 done
 
 for color in 0 1 2; do

@@ -143,6 +143,7 @@
 
 typedef struct Material {
   uint32_t texture;
+  uint32_t texture_type;
   uint32_t blend;
   uint32_t flags;
 } Material;
@@ -308,7 +309,7 @@ static int find_or_add_texture(const char *name, uint32_t *index) {
 //the model's texture i, as a name in textures. one that is not read from a
 //file of its own is painted by the game from a creature's or a character's
 //look, which a model placed in the world does not have, and is left without
-static int model_texture(uint32_t i, uint32_t *texture) {
+static int model_texture(uint32_t i, uint32_t *texture, uint32_t *type) {
   uint32_t count;
   const uint8_t *records;
   *texture = NO_TEXTURE;
@@ -319,6 +320,7 @@ static int model_texture(uint32_t i, uint32_t *texture) {
     return fail("a batch names a texture the model does not have");
 
   const uint8_t *record = records + i * TEXTURE_SIZE;
+  *type = read_u32(record);
   uint32_t length = read_u32(record + 8);
   uint32_t offset = read_u32(record + 12);
 
@@ -377,7 +379,7 @@ static int batch_material(const uint8_t *batch, uint32_t layer,
       .blend = blend,
       .flags = read_u16(flag_records + flags_index * RENDER_FLAGS_SIZE)};
   if (model_texture(read_u16(lookup + combo * sizeof(uint16_t)),
-                    &wanted.texture) != 0)
+                    &wanted.texture, &wanted.texture_type) != 0)
     return 1;
 
   *drawn = 1;
@@ -1149,10 +1151,10 @@ static void write_gltf(const char *path) {
     buf_fmt(&json,
            "{\"attributes\":{\"POSITION\":%u,\"NORMAL\":%u,\"TEXCOORD_0\":%u,"
            "\"JOINTS_0\":%u,\"WEIGHTS_0\":%u},\"indices\":%u,\"material\":%u,"
-           "\"extras\":{\"geoset\":%u}}",
+           "\"extras\":{\"geoset\":%u,\"texture_type\":%u}}",
            position_accessor, normal_accessor, uv_accessor, joints_accessor,
            weights_accessor, batch_accessor[i], batches[i].material,
-           batches[i].geoset);
+           batches[i].geoset, materials[batches[i].material].texture_type);
   }
   buf_str(&json, "]}],");
 
