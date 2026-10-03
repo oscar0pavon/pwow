@@ -24,12 +24,11 @@
 #define ATTACHMENT_LEFT_HAND 2
 #define ATTACHMENT_HELM 11
 
-//where a weapon or shield is carried while it is not in the hand: on the back
-//for a shield and a big weapon, at the hips for the others
-#define ATTACHMENT_SHEATH_SHIELD 28
-#define ATTACHMENT_LARGE_WEAPON_RIGHT 31
-#define ATTACHMENT_HIP_WEAPON_LEFT 32
-#define ATTACHMENT_HIP_WEAPON_RIGHT 33
+//where a weapon is carried while it is not in the hand: on the back for a big
+//one, at the hips for the others. a shield stays on its arm
+#define ATTACHMENT_HIP_RIGHT 9
+#define ATTACHMENT_HIP_LEFT 10
+#define ATTACHMENT_BACK 12
 
 typedef struct PAttachmentPoint {
   u32 id, joint;
@@ -79,6 +78,10 @@ void attached_release(PAttachedModel *attached);
 typedef struct PAttachedItem {
   PAttachedModel model;
   PAttachmentPoint point;
+  //turns the model once it is at the point, the identity for an item held in
+  //a hand, whose models are authored for that. an item carried on the back
+  //or a hip is turned onto it
+  mat4 local;
 } PAttachedItem;
 
 #define ATTACHED_ITEMS_MAX 4

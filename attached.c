@@ -186,6 +186,7 @@ bool attached_item_create(PAttachedItem *out, const PAttachmentPoints *points,
     return false;
 
   out->point = *point;
+  glm_mat4_identity(out->local);
   return true;
 }
 
@@ -194,7 +195,9 @@ void attached_item_draw(PAttachedItem *item, const PSkin *body,
                         uint32_t image_index, mat4 view, mat4 projection) {
   mat4 attachment;
   attachment_matrix(body, &item->point, attachment);
-  glm_mat4_mul(body_model_mat, attachment, item->model.model.model_mat);
+  mat4 at_point;
+  glm_mat4_mul(body_model_mat, attachment, at_point);
+  glm_mat4_mul(at_point, item->local, item->model.model.model_mat);
   skinned_model_draw(&item->model.model, &item->model.skin, command,
                      image_index, view, projection);
 }
