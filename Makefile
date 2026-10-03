@@ -24,13 +24,13 @@ wowauth/%.o: wowauth/%.c
 
 .PHONY: all clean compile_commands
 
-all: pwow adt2wot wmo2wwb m22wwb m22gltf test_auth resolve_creatures
+all: pwow adt2wot wmo2wwb m22wwb m22gltf xml2ui test_auth resolve_creatures
 
 compile_commands:
 	make --always-make --dry-run
 
-pwow: main.c camera.c input.c creatures.c equipment.c gamedata.c attached.c $(wowauth_objs) $(WORKDIR)/lib/libpengine.a
-	$(CC) $(CFLAGS) $(GLOBAL_DEFINE) $(CINCLUDES) main.c camera.c input.c creatures.c equipment.c gamedata.c attached.c $(wowauth_objs) \
+pwow: main.c camera.c input.c creatures.c equipment.c gamedata.c attached.c hud.c ui_frames.c $(wowauth_objs) $(WORKDIR)/lib/libpengine.a
+	$(CC) $(CFLAGS) $(GLOBAL_DEFINE) $(CINCLUDES) main.c camera.c input.c creatures.c equipment.c gamedata.c attached.c hud.c ui_frames.c $(wowauth_objs) \
 		-L$(WORKDIR)/lib -lpengine $(LIBRARIES) $(WOWAUTH_LIBRARIES) -o pwow
 
 test_auth: tools/test_auth.c $(wowauth_objs) $(WORKDIR)/lib/libpengine.a
@@ -50,9 +50,20 @@ wmo2wwb: tools/wmo2wwb.c
 m22wwb: tools/m22wwb.c
 	$(CC) -O2 -Wall -Wextra tools/m22wwb.c -o m22wwb
 
+xml2ui: tools/xml2ui.c ui_layout.h
+	$(CC) -O2 -Wall -Wextra tools/xml2ui.c -lexpat -o xml2ui
+
+#INFO the layout comes from the user's own FrameXML, so the table is generated
+#here and not committed, like data/
+GAME_DATA ?= /root/sources/WoWee/Data/expansions/classic
+UI_FRAMES := PlayerFrame TargetFrame
+
+ui_frames.c: xml2ui
+	./xml2ui $(GAME_DATA) $@ $(UI_FRAMES) > /dev/null
+
 m22gltf: tools/m22gltf.c
 	$(CC) -O2 -Wall -Wextra tools/m22gltf.c -o m22gltf
 
 clean:
-	rm -f pwow adt2wot wmo2wwb m22wwb m22gltf test_auth resolve_creatures
+	rm -f pwow adt2wot wmo2wwb m22wwb m22gltf xml2ui ui_frames.c test_auth resolve_creatures
 	rm -f $(wowauth_objs) $(wowauth_deps)

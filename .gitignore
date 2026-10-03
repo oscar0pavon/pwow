@@ -5,6 +5,8 @@ adt2wot
 wmo2wwb
 m22wwb
 m22gltf
+xml2ui
+ui_frames.c
 test_auth
 resolve_creatures
 

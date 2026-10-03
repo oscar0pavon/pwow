@@ -13,6 +13,7 @@
 #include <engine/skeletal.h>
 #include <engine/terrain/terrain_world.h>
 #include <engine/text.h>
+#include <engine/ui.h>
 #include <engine/time.h>
 #include <engine/window_manager.h>
 #include <wowauth/wowauth.h>
@@ -27,6 +28,7 @@
 #include "attached.h"
 #include "creatures.h"
 #include "equipment.h"
+#include "hud.h"
 #include "input.h"
 
 #define PLAYER_MODEL_PATH "data/character/tauren/male/taurenmale.glb"
@@ -43,8 +45,8 @@
 #define PLAYER_SKIN_ID 0
 static const PAppearance PLAYER_APPEARANCE = {.skin = PLAYER_SKIN_ID};
 
-#define HUD_FONT_PATH "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf"
-#define HUD_FONT_SIZE 20.0f
+#define HUD_FONT_PATH "/root/sources/WoWee/Data/expansions/classic/fonts/frizqt__.ttf"
+#define HUD_FONT_SIZE 13.0f
 
 #define DATA_DIRECTORY "data"
 
@@ -117,6 +119,7 @@ static PTerrainWorld world;
 //pwow_init() instead of the ground-height guess start_over_ground() makes
 //for the static tile viewer
 static bool live_mode;
+static char player_name[32] = "Player";
 static float live_player_z;
 static float live_player_facing_degrees;
 
@@ -624,7 +627,10 @@ static void pwow_draw_scene(PRenderTarget *target, VkCommandBuffer *command,
   snprintf(hud_line, sizeof(hud_line), "%s  (%.0f, %.0f, %.0f)", map,
            player_position[0], player_position[1], player_position[2]);
 
+  hud_draw_images(target, *command, image_index);
+
   pe_text_begin(*command, target, image_index);
+  hud_draw_text();
   pe_text_draw(hud_line, (vec3){1.f, 1.f, 1.f}, 10, pe_text_ascent() + 10);
   if (live_mode)
     draw_npc_hud(pe_text_ascent() + 10 + pe_text_cell_height());
@@ -634,6 +640,19 @@ static void pwow_draw_scene(PRenderTarget *target, VkCommandBuffer *command,
 static void pwow_init() {
   if (!pe_text_init(HUD_FONT_PATH, HUD_FONT_SIZE))
     LOG("pwow: can't load HUD font %s\n", HUD_FONT_PATH);
+
+  if (!pe_ui_init() || !hud_init(DATA_DIRECTORY))
+    LOG("pwow: can't start the interface\n");
+  hud_set_text("PlayerName", player_name);
+  hud_set_bar("PlayerFrameHealthBar", 1.f, (float[]){0.f, 1.f, 0.f});
+  hud_show("PlayerRestIcon", false);
+  hud_show("PlayerAttackIcon", false);
+  hud_show_prefixed("TargetFrameBuff", false);
+  hud_show_prefixed("TargetFrameDebuff", false);
+  hud_show("TargetHighLevelTexture", false);
+  hud_show("TargetFrame", false);
+  hud_set_text("TargetName", "Target");
+  hud_set_bar("TargetFrameHealthBar", 0.6f, (float[]){0.f, 1.f, 0.f});
 
   pe_vk_terrain_world_create(&world);
 
@@ -1075,6 +1094,7 @@ static void live_login(const char *host, int port, const char *account,
   start_tile_y = (int)lroundf(PE_TERRAIN_MAP_CENTRE_TILE - 0.5f -
                               start_x / PE_TERRAIN_TILE_SIZE);
 
+  snprintf(player_name, sizeof(player_name), "%s", characters[0].name);
   LOG("pwow: logged in as %s, map=%s position=(%.2f, %.2f, %.2f)\n",
       characters[0].name, map, start_x, start_y, live_player_z);
 }

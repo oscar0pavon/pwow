@@ -120,6 +120,14 @@ One `CreatureTemplate` per unique species (glb path, converted by `prepare_creat
 
 Each instance switches every frame between its species' idle/walk/run clip (resolved by name once per species in `find_or_load_template()`, falling back to whichever clip the species actually has) from `PWowCreature.moving`/`.walking` (`pengine/src/engine/wowauth/wowobject.h`). `walking` is the real `PRE_WOTLK_RUNMODE` bit off the last `SMSG_MONSTER_MOVE`'s own spline flags (WoWee's `spline_packet.hpp`: set means Run, clear means Walk on this pre-WotLK wire) - `pe_wowobject_handle_monster_move()` already parsed that flags word for the Catmull-Rom/cyclic bits, so reading this one too was free.
 
+## The interface (HUD)
+
+The unit frames are the game's own, read from `interface/framexml/*.xml` and drawn without Lua. `tools/xml2ui.c` (expat) parses every FrameXML file for its `virtual` templates, resolves `inherits`, and writes the named frames (`UI_FRAMES` in the Makefile: PlayerFrame, TargetFrame) to `ui_frames.c` as a flat `UiNodeDef` table (`ui_layout.h`) plus the draw order: frames sorted by strata, then level (parent + 1), then creation, each with its layers BACKGROUND to HIGHLIGHT. `ui_frames.c` is generated from the user's game data and gitignored, like `data/`. `./prepare_ui.sh` converts the textures it names into `data/interface/`.
+
+`hud.c` lays the table out at run time (anchors, `setAllPoints`, two opposite anchors giving a size; units of a screen 768 high, y up) and draws it through pengine's `ui.c` (`pe_ui_*`: batched, alpha and additive blended textured quads in pixels; `gui.c`'s `Button` is flat colour only and cannot draw these). Text goes through `pe_text_*` inside `main.c`'s one `pe_text_begin()/end()` pair; pfonts' Vulkan backend has one atlas, so all text is one size (`HUD_FONT_SIZE`), not the XML's font heights. What Lua would show or hide is set by hand in `pwow_init()` (`hud_show*`): the rest and attack icons, buff and debuff slots and the skull start hidden. Nothing is fed from the server yet: the name is the character's, the bars are full, the portrait is empty and the target frame is hidden.
+
+Run `make pwow` to rebuild after a change here: a bare `make` stops at the first rule of `include.make` and leaves `pwow` stale.
+
 ## Conventions
 
 - Commit messages are lowercase imperative summaries with a prose body explaining the mechanism and consequence, not a bullet list of edits. End them with the attribution line from the session's reminder.
