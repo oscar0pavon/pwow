@@ -16,4 +16,7 @@ void actionbar_update(const PWowObjectState *state);
 //the spell in slot 1 to 12 of the page shown, 0 if it holds none
 unsigned actionbar_spell(const PWowObjectState *state, int slot);
 
+//what Spell.dbc calls a spell and its rank ("" for none), valid for as long as the dbc is loaded
+bool actionbar_spell_name(unsigned spell, const char **name, const char **rank);
+
 #endif

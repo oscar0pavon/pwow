@@ -379,7 +379,8 @@ static int layer_rank(const char *name) {
 static int add_region(const Element *element, int frame_node, int layer,
                       const char *frame_name) {
   size_t tag_length = strlen(element->tag);
-  bool is_texture = tag_length >= 7 &&
+  bool is_button_text = strcmp(element->tag, "ButtonText") == 0;
+  bool is_texture = !is_button_text && tag_length >= 7 &&
                     strcmp(element->tag + tag_length - 7, "Texture") == 0;
 
   Contributors c = {0};
@@ -389,6 +390,14 @@ static int add_region(const Element *element, int frame_node, int layer,
   const char *raw = effective_attribute(&c, "name");
   if (raw)
     expand_name(raw, frame_name, name, sizeof(name));
+
+  //a button's text takes its font from the NormalFont beside it
+  Contributors font = c;
+  const Element *normal_font = is_button_text ? child(element->parent, "NormalFont") : NULL;
+  if (normal_font) {
+    font = (Contributors){0};
+    gather(normal_font, &font);
+  }
 
   int node = new_node(is_texture ? UI_TEXTURE : UI_FONTSTRING, frame_node, name);
   UiNodeDef *def = &nodes[node];
@@ -414,11 +423,13 @@ static int add_region(const Element *element, int frame_node, int layer,
       def->tex_coords[3] = number(attribute(coords, "bottom"), 1.f);
     }
   } else {
-    def->font_size = font_height(&c);
-    def->justify = justification(&c);
+    def->font_size = font_height(&font);
+    def->justify = justification(&font);
   }
 
-  read_color(effective_child(&c, "Color"), def->color, &def->has_color);
+  read_color(effective_child(&font, "Color"), def->color, &def->has_color);
+  if (!def->has_color)
+    read_color(effective_child(&c, "Color"), def->color, &def->has_color);
 
   regions[region_count] = (Region){node, layer};
   region_frame[region_count++] = frame_node;
@@ -506,6 +517,10 @@ static void add_frame(const Element *element, int parent, const char *parent_nam
   const Element *normal = effective_child(&c, "NormalTexture");
   if (normal)
     add_region(normal, node, 2, name);
+
+  const Element *button_text = effective_child(&c, "ButtonText");
+  if (button_text)
+    add_region(button_text, node, 3, name);
 
   def->clickable = strcmp(element->tag, "Button") == 0 ||
                    strcmp(element->tag, "CheckButton") == 0;

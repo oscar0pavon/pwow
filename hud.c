@@ -47,6 +47,9 @@ static float ui_width;
 static float ui_height = UI_HEIGHT;
 static float ui_scale = 1.f;
 
+void hud_draw_tooltip_box();
+void hud_draw_tooltip_text();
+
 static int find_node(const char *name) {
   for (int i = 0; i < ui_node_count; i++)
     if (ui_nodes[i].name[0] && strcmp(ui_nodes[i].name, name) == 0)
@@ -71,6 +74,8 @@ int hud_init(const char *directory) {
 }
 
 int hud_node(const char *name) { return find_node(name); }
+
+float hud_text_width(const char *text) { return pe_text_width(text) / ui_scale; }
 
 void hud_set_size(int node, float width, float height) {
   states[node].has_size = true;
@@ -378,11 +383,13 @@ void hud_draw_images(PRenderTarget *target, VkCommandBuffer command,
     else if (ui_nodes[node].kind == UI_BARFILL)
       draw_bar_fill(node);
   }
+  hud_draw_tooltip_box();
   draw_cursor_icon();
   pe_ui_end();
 }
 
 void hud_draw_text() {
+  hud_draw_tooltip_text();
   for (int i = 0; i < ui_draw_count; i++) {
     int node = ui_draw_order[i];
     if (ui_nodes[node].kind == UI_FONTSTRING && is_visible(node))
@@ -488,4 +495,125 @@ HudClick hud_update_mouse(float mouse_x, float mouse_y, bool left_down, bool rig
 bool hud_mouse_over_ui() {
   return hovered_node != UI_SCREEN || pressed_node[0] != UI_SCREEN ||
          pressed_node[1] != UI_SCREEN;
+}
+
+#define TOOLTIP_LINES_MAX 8
+#define TOOLTIP_LINE_MAX 96
+#define TOOLTIP_PADDING 10.f
+#define TOOLTIP_EDGE 16.f
+#define TOOLTIP_BACKGROUND_INSET 5.f
+#define TOOLTIP_POINTER_GAP 14.f
+#define TOOLTIP_BORDER "interface/tooltips/ui-tooltip-border.png"
+
+static struct {
+  int count;
+  char text[TOOLTIP_LINES_MAX][TOOLTIP_LINE_MAX];
+  float color[TOOLTIP_LINES_MAX][3];
+  Rect box; //where the last draw put it, in the units of the frames
+} tooltip;
+
+void hud_tooltip_clear() { tooltip.count = 0; }
+
+void hud_tooltip_line(const char *text, const float color[3]) {
+  if (tooltip.count == TOOLTIP_LINES_MAX)
+    return;
+
+  snprintf(tooltip.text[tooltip.count], TOOLTIP_LINE_MAX, "%s", text);
+  memcpy(tooltip.color[tooltip.count], color, sizeof(tooltip.color[0]));
+  tooltip.count++;
+}
+
+const char *hud_hovered_name() {
+  return hovered_node == UI_SCREEN ? NULL : ui_nodes[hovered_node].name;
+}
+
+static float tooltip_line_height() { return pe_text_cell_height() / ui_scale; }
+
+//above and to the right of the pointer, kept on the screen
+static void place_tooltip() {
+  float width = 0.f;
+  for (int i = 0; i < tooltip.count; i++) {
+    float line = hud_text_width(tooltip.text[i]);
+    width = line > width ? line : width;
+  }
+
+  float height = tooltip.count * tooltip_line_height();
+  Rect box = {0.f, 0.f, width + 2.f * TOOLTIP_PADDING, height + 2.f * TOOLTIP_PADDING};
+
+  box.left = pointer_x / ui_scale + TOOLTIP_POINTER_GAP;
+  box.bottom = ui_height - pointer_y / ui_scale + TOOLTIP_POINTER_GAP;
+  if (box.left + box.width > ui_width)
+    box.left = pointer_x / ui_scale - TOOLTIP_POINTER_GAP - box.width;
+  if (box.bottom + box.height > ui_height)
+    box.bottom = ui_height - box.height;
+  tooltip.box = box;
+}
+
+//turned: the piece is stored a quarter turn, as the border's top and bottom are
+static void draw_tooltip_piece(PUiImage *image, float x, float y, float width, float height,
+                               float u0, float u1, bool turned) {
+  PUiQuad quad = {.image = image,
+                  .x = x * ui_scale,
+                  .y = (ui_height - y - height) * ui_scale,
+                  .width = width * ui_scale,
+                  .height = height * ui_scale,
+                  .u0 = u0,
+                  .u1 = u1,
+                  .v1 = 1.f,
+                  .color = {1.f, 1.f, 1.f, 1.f},
+                  .transpose_uv = turned};
+  pe_ui_quad(&quad);
+}
+
+//the backdrop of the game's tooltips: a dark fill, and a border of eight 16 pixel
+//pieces of one strip: left, right, top, bottom, then the four corners
+static void draw_tooltip_box() {
+  Rect box = tooltip.box;
+  static const float fill[4] = {0.01f, 0.01f, 0.04f, 0.9f};
+  static const float whole[4] = {0.f, 1.f, 0.f, 1.f};
+
+  Rect inner = {box.left + TOOLTIP_BACKGROUND_INSET, box.bottom + TOOLTIP_BACKGROUND_INSET,
+                box.width - 2.f * TOOLTIP_BACKGROUND_INSET,
+                box.height - 2.f * TOOLTIP_BACKGROUND_INSET};
+  draw_quad(NULL, inner, whole, fill, PE_UI_BLEND_ALPHA);
+
+  char path[512];
+  snprintf(path, sizeof(path), "%s/%s", texture_directory, TOOLTIP_BORDER);
+  PUiImage *border = pe_ui_image(path);
+  if (!border)
+    return;
+
+  const float e = TOOLTIP_EDGE, piece = 0.125f;
+  float right = box.left + box.width - e, top = box.bottom + box.height - e;
+  float middle_width = box.width - 2.f * e, middle_height = box.height - 2.f * e;
+
+  draw_tooltip_piece(border, box.left, box.bottom + e, e, middle_height, 0 * piece, 1 * piece, false);
+  draw_tooltip_piece(border, right, box.bottom + e, e, middle_height, 1 * piece, 2 * piece, false);
+  draw_tooltip_piece(border, box.left + e, top, middle_width, e, 2 * piece, 3 * piece, true);
+  draw_tooltip_piece(border, box.left + e, box.bottom, middle_width, e, 3 * piece, 4 * piece, true);
+  draw_tooltip_piece(border, box.left, top, e, e, 4 * piece, 5 * piece, false);
+  draw_tooltip_piece(border, right, top, e, e, 5 * piece, 6 * piece, false);
+  draw_tooltip_piece(border, box.left, box.bottom, e, e, 6 * piece, 7 * piece, false);
+  draw_tooltip_piece(border, right, box.bottom, e, e, 7 * piece, 8 * piece, false);
+}
+
+void hud_draw_tooltip_box() {
+  if (tooltip.count == 0)
+    return;
+
+  place_tooltip();
+  draw_tooltip_box();
+}
+
+void hud_draw_tooltip_text() {
+  float line_height = tooltip_line_height();
+
+  for (int i = 0; i < tooltip.count; i++) {
+    float x = (tooltip.box.left + TOOLTIP_PADDING) * ui_scale;
+    float top = tooltip.box.bottom + tooltip.box.height - TOOLTIP_PADDING - i * line_height;
+    float y = (ui_height - top) * ui_scale + pe_text_ascent();
+
+    pe_text_draw(tooltip.text[i], (vec3){0.f, 0.f, 0.f}, x + SHADOW_OFFSET, y + SHADOW_OFFSET);
+    pe_text_draw(tooltip.text[i], (vec3){tooltip.color[i][0], tooltip.color[i][1], tooltip.color[i][2]}, x, y);
+  }
 }

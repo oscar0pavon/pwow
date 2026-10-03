@@ -41,6 +41,7 @@
 #define FIELD_UNIT_BYTES_2 164
 #define FIELD_PLAYER_INV_SLOT_HEAD 486
 #define PLAYER_INVENTORY_FIELDS 78 //INV_SLOT_HEAD up to the end of PACK_SLOT_16
+#define FIELD_PLAYER_COINAGE 1176
 #define FIELD_PLAYER_XP 716
 #define FIELD_PLAYER_NEXT_LEVEL_XP 717
 #define FIELD_UNIT_DISPLAYID 131
@@ -243,6 +244,8 @@ typedef struct UnitUpdate {
   bool has_raw[UNIT_RAW_FIELDS];
   u32 xp, next_level_xp;
   bool has_xp, has_next_level_xp;
+  u32 money;
+  bool has_money;
   u32 inventory[PLAYER_INVENTORY_FIELDS];
   bool has_inventory[PLAYER_INVENTORY_FIELDS];
   float scale;
@@ -304,6 +307,10 @@ static void apply_player_update(PWowObjectState *state, const UnitUpdate *held) 
   if (held->has_next_level_xp)
     state->player_next_level_xp = held->next_level_xp;
   pe_wowinventory_apply_player(&state->inventory, held->inventory, held->has_inventory);
+  if (held->has_money) {
+    state->inventory.money = held->money;
+    state->inventory.serial++;
+  }
   state->player_valid = true;
 }
 
@@ -355,6 +362,10 @@ static bool parse_values_block(Cursor *c, u32 *entry, u32 *display_id,
       if (equip && inventory_field >= 0 && inventory_field < PLAYER_INVENTORY_FIELDS) {
         held->inventory[inventory_field] = value;
         held->has_inventory[inventory_field] = true;
+      }
+      if (field == FIELD_PLAYER_COINAGE) {
+        held->money = value;
+        held->has_money = true;
       }
       if (field == FIELD_PLAYER_XP) {
         held->xp = value;

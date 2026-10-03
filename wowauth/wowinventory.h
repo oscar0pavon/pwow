@@ -43,6 +43,8 @@ typedef struct PWowItemTemplate {
   u32 inventory_type;
   u32 stackable;
   u32 container_slots;
+  u32 item_level;
+  u32 required_level;
   char name[PE_WOWINV_NAME_MAX];
 } PWowItemTemplate;
 
@@ -55,6 +57,8 @@ typedef struct PWowInventory {
   //an empty slot
   u64 equipped[PE_WOWINV_EQUIP_SLOTS];
   u64 pack[PE_WOWINV_PACK_SLOTS];
+
+  u32 money; //PLAYER_FIELD_COINAGE, in copper
 
   //counts every change, so a reader knows to look again
   u32 serial;

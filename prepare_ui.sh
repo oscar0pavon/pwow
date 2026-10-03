@@ -12,7 +12,8 @@ out=$here/data
 extra_textures="interface/buttons/ui-quickslot.png
   interface/containerframe/ui-backpackbackground.png
   interface/buttons/button-backpack-up.png
-  interface/paperdoll/ui-paperdoll-slot-bag.png"
+  interface/paperdoll/ui-paperdoll-slot-bag.png
+  interface/tooltips/ui-tooltip-border.png"
 
 {
   for png in $extra_textures; do echo "texture $png"; done

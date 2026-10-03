@@ -77,6 +77,19 @@ static int page_of(const PWowObjectState *state) {
   return bonus ? (int)(BONUS_PAGES_FIRST + bonus - 1) : 0;
 }
 
+#define SPELL_NAME_FIELD 120
+#define SPELL_RANK_FIELD 129
+
+bool actionbar_spell_name(unsigned spell, const char **name, const char **rank) {
+  int record = ready ? find_record(&spells, spell) : -1;
+  if (record < 0)
+    return false;
+
+  *name = pe_wowdbc_get_string(&spells, record, SPELL_NAME_FIELD);
+  *rank = pe_wowdbc_get_string(&spells, record, SPELL_RANK_FIELD);
+  return true;
+}
+
 unsigned actionbar_spell(const PWowObjectState *state, int slot) {
   u32 button = state->action_buttons[page_of(state) * ACTIONBAR_BUTTONS + slot - 1];
   return (button >> 24) == ACTION_TYPE_SPELL ? button & 0x00FFFFFF : 0;

@@ -16,6 +16,8 @@ void hud_show(const char *name, bool shown);
 //size, texture coordinates and the anchor are what the game's Lua changes at run
 //time, as a bag's frame does to fit its slots
 int hud_node(const char *name);
+//the width of a text in the units the frames are laid out in
+float hud_text_width(const char *text);
 void hud_set_size(int node, float width, float height);
 void hud_set_tex_coords(int node, float left, float right, float top, float bottom);
 void hud_set_anchor(int node, int point, int relative, int relative_point, float x, float y);
@@ -47,6 +49,14 @@ typedef struct HudClick {
 //the pushed look of the one held with the left button, and returns the button
 //that was clicked (pressed and let go over it) since the last call
 HudClick hud_update_mouse(float mouse_x, float mouse_y, bool left_down, bool right_down);
+
+//a tooltip is a few lines, drawn by the pointer until it is cleared; the
+//caller fills it for what the pointer is over, every frame
+void hud_tooltip_clear();
+void hud_tooltip_line(const char *text, const float color[3]);
+
+//the name of the button or frame the pointer is over, NULL if it is over none
+const char *hud_hovered_name();
 
 //an icon the pointer carries, drawn on it over everything; NULL for none
 void hud_set_cursor(const char *texture);

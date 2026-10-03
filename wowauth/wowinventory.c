@@ -213,7 +213,11 @@ void pe_wowinventory_handle_item_query(PWowInventory *inv, const u8 *payload,
 
   //allowable class and race, item level, required level, skill, skill rank,
   //spell, honor rank, city rank, reputation faction and rank, max count
-  for (int i = 0; i < 12; i++)
+  read_u32(&r); //allowable class
+  read_u32(&r); //allowable race
+  template->item_level = read_u32(&r);
+  template->required_level = read_u32(&r);
+  for (int i = 0; i < 8; i++)
     read_u32(&r);
   template->stackable = read_u32(&r);
   template->container_slots = read_u32(&r);

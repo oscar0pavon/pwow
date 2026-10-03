@@ -33,6 +33,8 @@
 typedef struct BagFrame {
   int frame, top, middle[MAX_BG_TEXTURES], bottom, name, portrait, money;
   int close_button;
+  int coin[3];      //the gold, silver and copper buttons of the money frame
+  int coin_text[3];
   int item[MAX_ITEMS], icon[MAX_ITEMS], count[MAX_ITEMS];
 
   bool open;
@@ -87,6 +89,14 @@ bool bags_init(const char *dbc_directory) {
     f->portrait = node_named("ContainerFrame%d%s", n, "Portrait");
     f->money = node_named("ContainerFrame%d%s", n, "MoneyFrame");
     f->close_button = node_named("ContainerFrame%d%s", n, "CloseButton");
+    static const char *const coins[3] = {"Gold", "Silver", "Copper"};
+    for (int c = 0; c < 3; c++) {
+      char name[96];
+      snprintf(name, sizeof(name), "ContainerFrame%dMoneyFrame%sButton", n, coins[c]);
+      f->coin[c] = hud_node(name);
+      snprintf(name, sizeof(name), "ContainerFrame%dMoneyFrame%sButtonText", n, coins[c]);
+      f->coin_text[c] = hud_node(name);
+    }
 
     for (int j = 0; j < MAX_ITEMS; j++) {
       f->item[j] = item_node("ContainerFrame%dItem%d%s", n, j + 1, "");
@@ -145,6 +155,50 @@ static void show_icon(const PWowInventory *inv, int node, u32 entry, const char 
     hud_set_node_texture(node, icon);
   else
     hud_set_node_texture(node, empty);
+}
+
+#define COPPER_PER_SILVER 100
+#define SILVER_PER_GOLD 100
+#define MONEY_ICON_WIDTH_SMALL 13.f
+#define MONEY_BUTTON_SPACING_SMALL -4.f
+
+//MoneyFrame.lua's MoneyFrame_Update for the small frame of the backpack, which
+//collapses its coins and always shows the copper: only the coins that are worth
+//showing, each as wide as its digits and a coin, chained from the right
+static void update_money(BagFrame *f, u32 money) {
+  enum { GOLD, SILVER, COPPER };
+  u32 gold = money / (COPPER_PER_SILVER * SILVER_PER_GOLD);
+  u32 silver = money / COPPER_PER_SILVER % SILVER_PER_GOLD;
+  u32 copper = money % COPPER_PER_SILVER;
+  u32 amount[3] = {gold, silver, copper};
+  float coin_width[3];
+
+  for (int c = 0; c < 3; c++) {
+    char text[16];
+    snprintf(text, sizeof(text), "%u", amount[c]);
+    hud_set_node_text(f->coin_text[c], text);
+    coin_width[c] = hud_text_width(text) + MONEY_ICON_WIDTH_SMALL;
+    hud_set_size(f->coin[c], coin_width[c], 13.f);
+  }
+
+  bool show[3] = {gold > 0, gold > 0 || silver > 0, true};
+  float width = MONEY_ICON_WIDTH_SMALL;
+  for (int c = 0; c < 3; c++) {
+    hud_show_node(f->coin[c], show[c]);
+    if (show[c])
+      width += coin_width[c];
+  }
+  if (show[GOLD] && show[SILVER])
+    width -= MONEY_BUTTON_SPACING_SMALL;
+  if (show[SILVER])
+    width -= MONEY_BUTTON_SPACING_SMALL;
+
+  hud_set_anchor(f->coin[GOLD], UI_RIGHT, f->coin[SILVER],
+                 show[SILVER] ? UI_LEFT : UI_RIGHT,
+                 show[SILVER] ? MONEY_BUTTON_SPACING_SMALL : 0.f, 0.f);
+  hud_set_anchor(f->coin[SILVER], UI_RIGHT, f->coin[COPPER], show[COPPER] ? UI_LEFT : UI_RIGHT,
+                 show[COPPER] ? MONEY_BUTTON_SPACING_SMALL : 0.f, 0.f);
+  hud_set_size(f->money, width, 13.f);
 }
 
 static void fill_items(const PWowInventory *inv, BagFrame *f) {
@@ -289,7 +343,9 @@ static void generate_frame(const PWowInventory *inv, BagFrame *f, int size, int 
   set_background(f, size, bag);
   place_items(f, size, bag);
   hud_set_size(f->frame, CONTAINER_WIDTH, f->height);
-  hud_show_node(f->money, false);
+  hud_show_node(f->money, bag == 0);
+  if (bag == 0)
+    update_money(f, inv->money);
   show_bag_portrait(inv, f);
   fill_items(inv, f);
 }
@@ -389,6 +445,8 @@ void bags_update(const PWowInventory *inv) {
     } else {
       show_bag_portrait(inv, f);
       fill_items(inv, f);
+      if (f->bag == 0)
+        update_money(f, inv->money);
     }
   }
 }
@@ -502,4 +560,26 @@ bool bags_click(HudClick click, const PWowInventory *inv, PWowWorld *world) {
     return true;
   }
   return false;
+}
+
+u32 bags_item_under(const char *name, const PWowInventory *inv, bool *is_bag_button) {
+  int frame, item, bag;
+  *is_bag_button = false;
+  if (!ready || !name)
+    return 0;
+
+  if (sscanf(name, "ContainerFrame%dItem%d", &frame, &item) == 2 && frame >= 1 &&
+      frame <= FRAMES && item >= 1 && item <= MAX_ITEMS) {
+    const BagFrame *f = &frames[frame - 1];
+    if (!f->open || item > f->size || (cursor.active && cursor.bag == f->bag &&
+                                       cursor.slot == f->size - item + 1))
+      return 0;
+    return pe_wowinventory_slot(inv, f->bag, f->size - item + 1).entry;
+  }
+
+  if (sscanf(name, "CharacterBag%dSlot", &bag) == 1 && bag >= 0 && bag < PE_WOWINV_BAGS) {
+    *is_bag_button = true;
+    return pe_wowinventory_bag_entry(inv, bag + 1);
+  }
+  return 0;
 }

@@ -31,6 +31,7 @@
 #include "actionbar.h"
 #include "bags.h"
 #include "hud.h"
+#include "tooltip.h"
 #include "input.h"
 
 #define PLAYER_MODEL_PATH "data/character/tauren/male/taurenmale.glb"
@@ -1030,6 +1031,8 @@ static void use_action_keys() {
 static void pwow_update() {
   use_clicked_button(hud_update_mouse(mouse.x, mouse.y, mouse.left.pressed, mouse.right.pressed));
   use_action_keys();
+  if (live_mode)
+    tooltip_update(&npc_state);
   toggle_bags_key();
   cancel_cursor_key();
 

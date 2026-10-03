@@ -28,4 +28,8 @@ bool bags_click(HudClick click, const PWowInventory *inventory, PWowWorld *world
 //puts down what the pointer carries without dropping it anywhere
 void bags_cancel_cursor(const PWowInventory *inventory);
 
+//the entry of the item under a container frame's item button or a bag button of the bar, 0 for an
+//empty one or for any other name; is_bag_button says it was one of the bar's
+u32 bags_item_under(const char *name, const PWowInventory *inventory, bool *is_bag_button);
+
 #endif
