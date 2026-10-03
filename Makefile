@@ -13,6 +13,8 @@ WOWAUTH_LIBRARIES := /usr/lib/libcrypto.so
 #INFO wowobject.c decompresses SMSG_COMPRESSED_UPDATE_OBJECT with zlib
 WOWAUTH_LIBRARIES += -lz
 
+pwow_src := main.c camera.c input.c creatures.c equipment.c gamedata.c attached.c hud.c actionbar.c bags.c tooltip.c targeting.c questmarks.c questwindow.c ui_frames.c
+
 wowauth_src := $(wildcard wowauth/*.c)
 wowauth_objs := $(wowauth_src:%.c=%.o)
 wowauth_deps := $(wowauth_objs:.o=.d)
@@ -29,8 +31,8 @@ all: pwow adt2wot wmo2wwb m22wwb m22gltf xml2ui test_auth resolve_creatures
 compile_commands:
 	make --always-make --dry-run
 
-pwow: main.c camera.c input.c creatures.c equipment.c gamedata.c attached.c hud.c actionbar.c bags.c tooltip.c ui_frames.c $(wowauth_objs) $(WORKDIR)/lib/libpengine.a
-	$(CC) $(CFLAGS) $(GLOBAL_DEFINE) $(CINCLUDES) main.c camera.c input.c creatures.c equipment.c gamedata.c attached.c hud.c actionbar.c bags.c tooltip.c ui_frames.c $(wowauth_objs) \
+pwow: $(pwow_src) $(wowauth_objs) $(WORKDIR)/lib/libpengine.a
+	$(CC) $(CFLAGS) $(GLOBAL_DEFINE) $(CINCLUDES) $(pwow_src) $(wowauth_objs) \
 		-L$(WORKDIR)/lib -lpengine $(LIBRARIES) $(WOWAUTH_LIBRARIES) -o pwow
 
 test_auth: tools/test_auth.c $(wowauth_objs) $(WORKDIR)/lib/libpengine.a

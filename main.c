@@ -23,6 +23,7 @@
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 #include "camera.h"
 #include "attached.h"
@@ -33,6 +34,9 @@
 #include "hud.h"
 #include "tooltip.h"
 #include "input.h"
+#include "questmarks.h"
+#include "questwindow.h"
+#include "targeting.h"
 
 #define PLAYER_MODEL_PATH "data/character/tauren/male/taurenmale.glb"
 
@@ -361,6 +365,10 @@ static float pitch = -0.2f;
 //one also turns the character
 static bool mouse_look_active;
 
+//how far the pointer has been dragged in all, in pixels: a button let go after
+//less than a few of them was a click and not the camera turning
+static float mouse_drag_pixels;
+
 //dx/dy in screen pixels since the last call, while either button is held;
 //false and untouched otherwise. shared by both camera modes, which is safe
 //since only one runs per frame
@@ -384,6 +392,7 @@ static bool mouse_look_delta(float *dx, float *dy) {
 
   *dx = mouse.dx;
   *dy = mouse.dy;
+  mouse_drag_pixels += fabsf(mouse.dx) + fabsf(mouse.dy);
   mouse.dx = 0;
   mouse.dy = 0;
   return true;
@@ -682,8 +691,6 @@ static void pwow_init() {
   if (!actionbar_init("data/dbc"))
     LOG("pwow: can't read the spell dbc files, run ./prepare_ui.sh\n");
   hud_set_bar("MainMenuExpBar", 0.f, NULL);
-  hud_set_text("TargetName", "Target");
-  hud_set_bar("TargetFrameHealthBar", 0.6f, (float[]){0.f, 1.f, 0.f});
 
   pe_vk_terrain_world_create(&world);
 
@@ -892,6 +899,74 @@ static void character_follow_ground() {
     player_position[2] = floor;
 }
 
+//---------------------------------------------------------------------------
+//what the server is told of the walk: it has to know where the player stands to
+//let it talk to an NPC. a packet when the keys held change, and a heartbeat twice a
+//second while moving
+//---------------------------------------------------------------------------
+
+#define HEARTBEAT_SECONDS 0.5f
+
+static struct {
+  u32 flags;
+  float since_packet;
+} movement;
+
+static u32 movement_time_ms() {
+  struct timespec now;
+  clock_gettime(CLOCK_MONOTONIC, &now);
+  return (u32)(now.tv_sec * 1000 + now.tv_nsec / 1000000);
+}
+
+static u32 movement_flags(const PwowFrameInput *in) {
+  u32 flags = 0;
+  if (in->forward != in->backward)
+    flags |= in->forward ? PE_WOWMOVE_FLAG_FORWARD : PE_WOWMOVE_FLAG_BACKWARD;
+  if (in->strafe_left != in->strafe_right)
+    flags |= in->strafe_left ? PE_WOWMOVE_FLAG_STRAFE_LEFT : PE_WOWMOVE_FLAG_STRAFE_RIGHT;
+  return flags;
+}
+
+//the packet that tells the server the keys changed to flags
+static PWowMove movement_packet(u32 flags, u32 before) {
+  u32 added = flags & ~before;
+  u32 removed = before & ~flags;
+
+  if (flags == 0)
+    return PE_WOWMOVE_STOP;
+  if (added & PE_WOWMOVE_FLAG_FORWARD)
+    return PE_WOWMOVE_START_FORWARD;
+  if (added & PE_WOWMOVE_FLAG_BACKWARD)
+    return PE_WOWMOVE_START_BACKWARD;
+  if (added & PE_WOWMOVE_FLAG_STRAFE_LEFT)
+    return PE_WOWMOVE_START_STRAFE_LEFT;
+  if (added & PE_WOWMOVE_FLAG_STRAFE_RIGHT)
+    return PE_WOWMOVE_START_STRAFE_RIGHT;
+  if (removed & (PE_WOWMOVE_FLAG_STRAFE_LEFT | PE_WOWMOVE_FLAG_STRAFE_RIGHT))
+    return PE_WOWMOVE_STOP_STRAFE;
+  return PE_WOWMOVE_HEARTBEAT;
+}
+
+static void tell_server_about_movement(const PwowFrameInput *in, float seconds) {
+  u32 flags = movement_flags(in);
+  movement.since_packet += seconds;
+
+  bool changed = flags != movement.flags;
+  if (!changed && (flags == 0 || movement.since_packet < HEARTBEAT_SECONDS))
+    return;
+
+  //the game's axes are X north and Y west, and its facing runs the other way round
+  float orientation = fmodf(-glm_rad(player_facing), GLM_PI * 2.0f);
+  if (orientation < 0.0f)
+    orientation += GLM_PI * 2.0f;
+
+  PWowMove packet = changed ? movement_packet(flags, movement.flags) : PE_WOWMOVE_HEARTBEAT;
+  pe_wowworld_send_move(&world_conn, packet, flags, movement_time_ms(), player_position[0],
+                        -player_position[1], player_position[2], orientation);
+  movement.flags = flags;
+  movement.since_packet = 0.0f;
+}
+
 static void update_live_character(float seconds) {
   PwowFrameInput in;
   pwow_input_read(&in);
@@ -901,6 +976,8 @@ static void update_live_character(float seconds) {
     pwow_camera_turn(&player_camera, dx * MOUSE_LOOK_SENSITIVITY_DEGREES,
                      -dy * MOUSE_LOOK_SENSITIVITY_DEGREES);
 
+  if (quest_window_scroll(mouse.wheel))
+    mouse.wheel = 0;
   pwow_camera_zoom(&player_camera, mouse.wheel);
   mouse.wheel = 0;
 
@@ -978,6 +1055,101 @@ static void update_live_character(float seconds) {
   player_place(player_position, player_facing);
 
   pwow_camera_update(&player_camera, &main_camera, player_position, seconds);
+  tell_server_about_movement(&in, seconds);
+}
+
+//---------------------------------------------------------------------------
+//the world under the pointer: a left click chooses a creature, a right click
+//talks to the one it is on
+//---------------------------------------------------------------------------
+
+#define CLICK_DRAG_PIXELS 4.0f
+#define INTERACT_DISTANCE 8.0f
+
+static const float ERROR_COLOR[3] = {1.0f, 0.1f, 0.1f};
+
+static u64 selected_target;
+
+typedef struct WorldPress {
+  bool down;
+  bool in_world;
+  float drag_at_press;
+  float x, y;
+} WorldPress;
+
+//true once, on the frame a button is let go, if it went down over the world and the
+//pointer hardly moved while it was held. x and y are where it went down
+static bool world_click(const Key *button, WorldPress *press) {
+  bool clicked = false;
+
+  if (button->pressed && !press->down) {
+    press->in_world = !hud_mouse_over_ui();
+    press->drag_at_press = mouse_drag_pixels;
+    press->x = mouse.x;
+    press->y = mouse.y;
+  }
+  if (!button->pressed && press->down && press->in_world)
+    clicked = mouse_drag_pixels - press->drag_at_press < CLICK_DRAG_PIXELS;
+
+  press->down = button->pressed;
+  return clicked;
+}
+
+static u64 creature_at(const WorldPress *press) {
+  float width, height;
+  hud_screen_size(&width, &height);
+  width *= hud_scale();
+  height *= hud_scale();
+
+  vec3 direction;
+  targeting_ray(main_camera.view, main_camera.projection, main_camera.position, press->x,
+                press->y, width, height, direction);
+  return targeting_pick(&npc_state, main_camera.position, direction);
+}
+
+static void select_target(u64 guid) {
+  if (guid == selected_target)
+    return;
+  selected_target = guid;
+  pe_wowworld_set_selection(&world_conn, guid);
+}
+
+static void talk_to(const PWowCreature *npc) {
+  if (!(npc->npc_flags & (PE_WOWOBJECT_NPC_GOSSIP | PE_WOWOBJECT_NPC_QUESTGIVER)))
+    return;
+
+  float dx = npc->x - player_position[0], dy = npc->y - player_position[1];
+  if (sqrtf(dx * dx + dy * dy) > INTERACT_DISTANCE) {
+    hud_notice("You are too far away", ERROR_COLOR);
+    return;
+  }
+  pe_wowworld_gossip_hello(&world_conn, npc->guid);
+}
+
+static void handle_world_clicks() {
+  static WorldPress left, right;
+
+  if (world_click(&mouse.left, &left))
+    select_target(creature_at(&left));
+
+  if (world_click(&mouse.right, &right)) {
+    u64 guid = creature_at(&right);
+    PWowCreature *npc = guid ? pe_wowobject_find_creature(&npc_state, guid) : NULL;
+    if (npc) {
+      select_target(guid);
+      talk_to(npc);
+    }
+  }
+}
+
+//the target frame, then the window and the signs over heads that lie over the world
+static void update_canvas() {
+  if (!targeting_update_frame(&npc_state, selected_target))
+    selected_target = 0;
+
+  hud_canvas_clear();
+  questmarks_update(&npc_state, main_camera.view, main_camera.projection, player_position);
+  quest_window_update(&npc_state, player_position);
 }
 
 #define SPELL_ATTACK 6603
@@ -993,6 +1165,8 @@ static void use_action_slot(int slot) {
 
 //ActionButton1 to 12 of the bar, by the click on one
 static void use_clicked_button(HudClick click) {
+  if (live_mode && quest_window_click(click, &npc_state, &world_conn))
+    return;
   if (live_mode && bags_click(click, &npc_state.inventory, &world_conn))
     return;
 
@@ -1004,7 +1178,7 @@ static void use_clicked_button(HudClick click) {
 //the keys 1 to 9 and 0 are slots 1 to 10, acting once as they go down
 static void cancel_cursor_key() {
   static bool was_down;
-  if (input.ESC.pressed && !was_down && live_mode)
+  if (input.ESC.pressed && !was_down && live_mode && !quest_window_close(&npc_state))
     bags_cancel_cursor(&npc_state.inventory);
   was_down = input.ESC.pressed;
 }
@@ -1041,12 +1215,16 @@ static void pwow_update() {
     pe_wowworld_poll(&world_conn, &npc_state);
     hud_update_player(&npc_state);
     pe_wowworld_request_item_templates(&world_conn, &npc_state);
+    pe_wowworld_request_details(&world_conn, &npc_state);
     actionbar_update(&npc_state);
     bags_update(&npc_state.inventory);
     sync_player_equipment();
     pe_wowobject_state_tick(&npc_state, delta_time);
     creatures_sync(&npc_state);
     update_live_character(delta_time);
+    handle_world_clicks();
+    update_canvas();
+    hud_notice_tick(delta_time);
     stream_world();
     play_animation_list(delta_time);
     return;
@@ -1186,6 +1364,8 @@ static void live_login(const char *host, int port, const char *account,
                               start_x / PE_TERRAIN_TILE_SIZE);
 
   snprintf(player_name, sizeof(player_name), "%s", characters[0].name);
+  quest_window_set_player(characters[0].name, characters[0].race, characters[0].character_class,
+                          characters[0].gender);
   LOG("pwow: logged in as %s, map=%s position=(%.2f, %.2f, %.2f)\n",
       characters[0].name, map, start_x, start_y, live_player_z);
 }

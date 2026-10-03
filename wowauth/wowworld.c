@@ -27,6 +27,29 @@
 #define OP_SMSG_DESTROY_OBJECT 0xAA
 #define OP_CMSG_ITEM_QUERY_SINGLE 86
 #define OP_SMSG_ITEM_QUERY_SINGLE_RESPONSE 88
+#define OP_CMSG_CREATURE_QUERY 96
+#define OP_SMSG_CREATURE_QUERY_RESPONSE 97
+#define OP_CMSG_SET_SELECTION 0x13D
+#define OP_CMSG_GOSSIP_HELLO 0x17B
+#define OP_CMSG_GOSSIP_SELECT_OPTION 0x17C
+#define OP_SMSG_GOSSIP_MESSAGE 0x17D
+#define OP_SMSG_GOSSIP_COMPLETE 0x17E
+#define OP_CMSG_NPC_TEXT_QUERY 0x17F
+#define OP_SMSG_NPC_TEXT_UPDATE 0x180
+#define OP_CMSG_QUESTGIVER_STATUS_QUERY 0x182
+#define OP_SMSG_QUESTGIVER_STATUS 0x183
+#define OP_SMSG_QUESTGIVER_QUEST_LIST 0x185
+#define OP_CMSG_QUESTGIVER_QUERY_QUEST 0x186
+#define OP_SMSG_QUESTGIVER_QUEST_DETAILS 0x188
+#define OP_CMSG_QUESTGIVER_ACCEPT_QUEST 0x189
+#define OP_CMSG_QUESTGIVER_COMPLETE_QUEST 0x18A
+#define OP_SMSG_QUESTGIVER_REQUEST_ITEMS 0x18B
+#define OP_SMSG_QUESTGIVER_OFFER_REWARD 0x18D
+#define OP_CMSG_QUESTGIVER_CHOOSE_REWARD 0x18E
+#define OP_SMSG_QUESTGIVER_QUEST_INVALID 0x18F
+#define OP_CMSG_QUESTGIVER_CANCEL 0x190
+#define OP_SMSG_QUESTGIVER_QUEST_COMPLETE 0x191
+#define OP_SMSG_QUESTGIVER_QUEST_FAILED 0x192
 
 //SharedDefines.h's ResponseCodes enum, position 12 (RESPONSE_SUCCESS..
 //CSTATUS_AUTHENTICATING fill 0..11 first)
@@ -245,6 +268,38 @@ static bool fold_world_packet(PWowObjectState *state, u16 opcode,
   case OP_SMSG_ACTION_BUTTONS:
     pe_wowobject_handle_action_buttons(state, payload, payload_len);
     return true;
+  case OP_SMSG_CREATURE_QUERY_RESPONSE:
+    pe_wowdialog_handle_creature_query(&state->names, payload, payload_len);
+    return true;
+  case OP_SMSG_GOSSIP_MESSAGE:
+    pe_wowdialog_handle_gossip(&state->dialog, payload, payload_len);
+    return true;
+  case OP_SMSG_NPC_TEXT_UPDATE:
+    pe_wowdialog_handle_npc_text(&state->dialog, payload, payload_len, false);
+    return true;
+  case OP_SMSG_QUESTGIVER_QUEST_LIST:
+    pe_wowdialog_handle_quest_list(&state->dialog, payload, payload_len);
+    return true;
+  case OP_SMSG_QUESTGIVER_QUEST_DETAILS:
+    pe_wowdialog_handle_quest_details(&state->dialog, payload, payload_len);
+    return true;
+  case OP_SMSG_QUESTGIVER_REQUEST_ITEMS:
+    pe_wowdialog_handle_request_items(&state->dialog, payload, payload_len);
+    return true;
+  case OP_SMSG_QUESTGIVER_OFFER_REWARD:
+    pe_wowdialog_handle_offer_reward(&state->dialog, payload, payload_len);
+    return true;
+  case OP_SMSG_QUESTGIVER_QUEST_COMPLETE:
+    pe_wowdialog_handle_quest_complete(&state->dialog, payload, payload_len);
+    return true;
+  case OP_SMSG_GOSSIP_COMPLETE:
+  case OP_SMSG_QUESTGIVER_QUEST_INVALID:
+  case OP_SMSG_QUESTGIVER_QUEST_FAILED:
+    pe_wowdialog_close(&state->dialog);
+    return true;
+  case OP_SMSG_QUESTGIVER_STATUS:
+    pe_wowobject_handle_questgiver_status(state, payload, payload_len);
+    return true;
   default:
     return false;
   }
@@ -291,13 +346,17 @@ bool pe_wowworld_char_enum(PWowWorld *world, PWowCharacter *out, int out_max,
     c->guid = wbuf_read_u64(&buf);
     wbuf_read_string(&buf, c->name, sizeof(c->name));
 
+    c->race = wbuf_read_u8(&buf);
+    c->character_class = wbuf_read_u8(&buf);
+    c->gender = wbuf_read_u8(&buf);
+
     //the rest of Player::BuildEnumData's entry, none of which pwow needs
-    //yet: race, class, gender, skin, face, hair style, hair color, facial
-    //hair (8 x u8); level (u8); zone, map (2 x u32); x, y, z (3 x float);
+    //yet: skin, face, hair style, hair color, facial hair (5 x u8); level
+    //(u8); zone, map (2 x u32); x, y, z (3 x float);
     //guild id, character flags (2 x u32); first-login flag (u8); pet
     //display id, level, family (3 x u32); 20 equipment slots, each a
     //display id (u32) plus an inventory type (u8)
-    buf.pos += 8;
+    buf.pos += 5;
     buf.pos += 1;
     buf.pos += 4 + 4;
     buf.pos += 4 + 4 + 4;
@@ -537,4 +596,154 @@ bool pe_wowworld_swap_item(PWowWorld *world, u8 dst_bag, u8 dst_slot, u8 src_bag
   wbuf_u8(&buf, src_bag);
   wbuf_u8(&buf, src_slot);
   return pe_wowworld_send_packet(world, OP_CMSG_SWAP_ITEM, buf.data, buf.len);
+}
+
+bool pe_wowworld_set_selection(PWowWorld *world, u64 guid) {
+  WBuf buf = {0};
+  wbuf_u64(&buf, guid);
+  return pe_wowworld_send_packet(world, OP_CMSG_SET_SELECTION, buf.data, buf.len);
+}
+
+static bool send_guid(PWowWorld *world, u16 opcode, u64 guid) {
+  WBuf buf = {0};
+  wbuf_u64(&buf, guid);
+  return pe_wowworld_send_packet(world, opcode, buf.data, buf.len);
+}
+
+static bool send_guid_and_quest(PWowWorld *world, u16 opcode, u64 npc, u32 quest) {
+  WBuf buf = {0};
+  wbuf_u64(&buf, npc);
+  wbuf_u32(&buf, quest);
+  return pe_wowworld_send_packet(world, opcode, buf.data, buf.len);
+}
+
+bool pe_wowworld_gossip_hello(PWowWorld *world, u64 npc) {
+  return send_guid(world, OP_CMSG_GOSSIP_HELLO, npc);
+}
+
+//the npc, the option, and the text typed for a coded option, left out of any other
+bool pe_wowworld_gossip_select(PWowWorld *world, u64 npc, u32 option, const char *code) {
+  WBuf buf = {0};
+  wbuf_u64(&buf, npc);
+  wbuf_u32(&buf, option);
+  if (code && code[0])
+    wbuf_cstring(&buf, code);
+  return pe_wowworld_send_packet(world, OP_CMSG_GOSSIP_SELECT_OPTION, buf.data, buf.len);
+}
+
+bool pe_wowworld_quest_query(PWowWorld *world, u64 npc, u32 quest) {
+  return send_guid_and_quest(world, OP_CMSG_QUESTGIVER_QUERY_QUEST, npc, quest);
+}
+
+bool pe_wowworld_quest_accept(PWowWorld *world, u64 npc, u32 quest) {
+  return send_guid_and_quest(world, OP_CMSG_QUESTGIVER_ACCEPT_QUEST, npc, quest);
+}
+
+bool pe_wowworld_quest_complete(PWowWorld *world, u64 npc, u32 quest) {
+  return send_guid_and_quest(world, OP_CMSG_QUESTGIVER_COMPLETE_QUEST, npc, quest);
+}
+
+bool pe_wowworld_quest_reward(PWowWorld *world, u64 npc, u32 quest, u32 choice) {
+  WBuf buf = {0};
+  wbuf_u64(&buf, npc);
+  wbuf_u32(&buf, quest);
+  wbuf_u32(&buf, choice);
+  return pe_wowworld_send_packet(world, OP_CMSG_QUESTGIVER_CHOOSE_REWARD, buf.data, buf.len);
+}
+
+bool pe_wowworld_quest_status_query(PWowWorld *world, u64 npc) {
+  return send_guid(world, OP_CMSG_QUESTGIVER_STATUS_QUERY, npc);
+}
+
+static bool send_creature_query(PWowWorld *world, u32 entry, u64 guid) {
+  WBuf buf = {0};
+  wbuf_u32(&buf, entry);
+  wbuf_u64(&buf, guid);
+  return pe_wowworld_send_packet(world, OP_CMSG_CREATURE_QUERY, buf.data, buf.len);
+}
+
+static void request_dialog_items(PWowObjectState *state) {
+  const PWowDialog *dialog = &state->dialog;
+  if (dialog->kind == PE_WOWDIALOG_NONE)
+    return;
+
+  for (int i = 0; i < dialog->choice_count; i++)
+    pe_wowinventory_want_template(&state->inventory, dialog->choices[i].entry);
+  for (int i = 0; i < dialog->reward_count; i++)
+    pe_wowinventory_want_template(&state->inventory, dialog->rewards[i].entry);
+  for (int i = 0; i < dialog->required_count; i++)
+    pe_wowinventory_want_template(&state->inventory, dialog->required[i].entry);
+}
+
+#define DETAIL_QUERIES_PER_CALL 8
+
+void pe_wowworld_request_details(PWowWorld *world, PWowObjectState *state) {
+  PWowDialog *dialog = &state->dialog;
+  if (dialog->text_wanted) {
+    WBuf buf = {0};
+    wbuf_u32(&buf, dialog->text_id);
+    wbuf_u64(&buf, dialog->npc);
+    pe_wowworld_send_packet(world, OP_CMSG_NPC_TEXT_QUERY, buf.data, buf.len);
+    dialog->text_wanted = false;
+  }
+  request_dialog_items(state);
+
+  int sent = 0;
+  for (int i = 0; i < state->count && sent < DETAIL_QUERIES_PER_CALL; i++) {
+    PWowCreature *creature = &state->creatures[i];
+
+    if (pe_wowdialog_name_wanted(&state->names, creature->entry)) {
+      send_creature_query(world, creature->entry, creature->guid);
+      sent++;
+    }
+    if ((creature->npc_flags & PE_WOWOBJECT_NPC_QUESTGIVER) && !creature->quest_status_asked) {
+      pe_wowworld_quest_status_query(world, creature->guid);
+      creature->quest_status_asked = true;
+      sent++;
+    }
+  }
+}
+
+//the game's MSG_MOVE_* opcodes (Opcodes_1_12_1.h)
+static u16 move_opcode(PWowMove move) {
+  switch (move) {
+  case PE_WOWMOVE_START_FORWARD:
+    return 181;
+  case PE_WOWMOVE_START_BACKWARD:
+    return 182;
+  case PE_WOWMOVE_STOP:
+    return 183;
+  case PE_WOWMOVE_START_STRAFE_LEFT:
+    return 184;
+  case PE_WOWMOVE_START_STRAFE_RIGHT:
+    return 185;
+  case PE_WOWMOVE_STOP_STRAFE:
+    return 186;
+  case PE_WOWMOVE_SET_FACING:
+    return 218;
+  case PE_WOWMOVE_HEARTBEAT:
+  default:
+    return 238;
+  }
+}
+
+static void wbuf_float(WBuf *b, float value) {
+  u32 bits;
+  memcpy(&bits, &value, sizeof(bits));
+  wbuf_u32(b, bits);
+}
+
+//MovementInfo of a player on foot: flags, the time, the position and facing, and
+//how long it has been falling
+bool pe_wowworld_send_move(PWowWorld *world, PWowMove move, u32 flags, u32 time_ms,
+                           float x, float y, float z, float orientation) {
+  WBuf buf = {0};
+  wbuf_u32(&buf, flags);
+  wbuf_u32(&buf, time_ms);
+  wbuf_float(&buf, x);
+  wbuf_float(&buf, y);
+  wbuf_float(&buf, z);
+  wbuf_float(&buf, orientation);
+  wbuf_u32(&buf, 0);
+  return pe_wowworld_send_packet(world, move_opcode(move), buf.data, buf.len);
 }

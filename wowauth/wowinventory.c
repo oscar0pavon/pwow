@@ -265,6 +265,10 @@ u32 pe_wowinventory_next_unasked(PWowInventory *inv) {
     if (template && template->state == PE_WOWINV_TEMPLATE_UNKNOWN)
       return item->entry;
   }
+
+  for (int i = 0; i < inv->template_count; i++)
+    if (inv->templates[i].state == PE_WOWINV_TEMPLATE_UNKNOWN)
+      return inv->templates[i].entry;
   return 0;
 }
 
@@ -272,4 +276,8 @@ void pe_wowinventory_mark_asked(PWowInventory *inv, u32 entry) {
   PWowItemTemplate *template = find_or_add_template(inv, entry);
   if (template)
     template->state = PE_WOWINV_TEMPLATE_ASKED;
+}
+
+void pe_wowinventory_want_template(PWowInventory *inv, u32 entry) {
+  find_or_add_template(inv, entry);
 }

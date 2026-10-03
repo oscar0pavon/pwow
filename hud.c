@@ -49,6 +49,9 @@ static float ui_scale = 1.f;
 
 void hud_draw_tooltip_box();
 void hud_draw_tooltip_text();
+static void draw_canvas_pictures();
+static void draw_canvas_text();
+static void draw_notice();
 
 static int find_node(const char *name) {
   for (int i = 0; i < ui_node_count; i++)
@@ -383,6 +386,7 @@ void hud_draw_images(PRenderTarget *target, VkCommandBuffer command,
     else if (ui_nodes[node].kind == UI_BARFILL)
       draw_bar_fill(node);
   }
+  draw_canvas_pictures();
   hud_draw_tooltip_box();
   draw_cursor_icon();
   pe_ui_end();
@@ -395,6 +399,8 @@ void hud_draw_text() {
     if (ui_nodes[node].kind == UI_FONTSTRING && is_visible(node))
       draw_text(node);
   }
+  draw_canvas_text();
+  draw_notice();
 }
 
 static const float POWER_COLORS[][3] = {
@@ -430,10 +436,196 @@ void hud_update_player(const PWowObjectState *state) {
               EXPERIENCE_COLOR);
 }
 
+//what the code lays out by itself every frame, for the windows the game builds with
+//Lua: in the units of the frames with the origin at the top left and y down, as
+//text runs. the code calls hud_canvas_clear() and fills it again each update
+#define CANVAS_PICTURES_MAX 512
+#define CANVAS_TEXTS_MAX 256
+#define CANVAS_REGIONS_MAX 64
+#define CANVAS_TEXT_MAX 160
+#define CANVAS_NAME_MAX 32
+
+typedef struct Box {
+  float left, top, width, height;
+} Box;
+
+typedef struct CanvasPicture {
+  PUiImage *image;
+  Box box;
+  float tex_coords[4];
+  float color[4];
+  bool additive;
+} CanvasPicture;
+
+typedef struct CanvasText {
+  char text[CANVAS_TEXT_MAX];
+  float left, top;
+  float color[3];
+  bool shadow;
+} CanvasText;
+
+typedef struct CanvasRegion {
+  char name[CANVAS_NAME_MAX];
+  Box box;
+  bool clickable;
+} CanvasRegion;
+
+static struct {
+  CanvasPicture pictures[CANVAS_PICTURES_MAX];
+  int picture_count;
+  CanvasText texts[CANVAS_TEXTS_MAX];
+  int text_count;
+  CanvasRegion regions[CANVAS_REGIONS_MAX];
+  int region_count;
+} canvas;
+
+static int hovered_region = -1;
+
+void hud_canvas_clear() {
+  canvas.picture_count = 0;
+  canvas.text_count = 0;
+  canvas.region_count = 0;
+}
+
+void hud_canvas_picture(const char *texture, float left, float top, float width, float height,
+                        const float tex_coords[4], const float color[4], bool additive) {
+  if (canvas.picture_count == CANVAS_PICTURES_MAX)
+    return;
+
+  CanvasPicture *picture = &canvas.pictures[canvas.picture_count++];
+  picture->image = NULL;
+  if (texture) {
+    char path[512];
+    snprintf(path, sizeof(path), "%s/%s", texture_directory, texture);
+    picture->image = pe_ui_image(path);
+    if (!picture->image) {
+      canvas.picture_count--;
+      return;
+    }
+  }
+  picture->box = (Box){left, top, width, height};
+  static const float whole[4] = {0.f, 1.f, 0.f, 1.f};
+  memcpy(picture->tex_coords, tex_coords ? tex_coords : whole, sizeof(picture->tex_coords));
+  static const float white[4] = {1.f, 1.f, 1.f, 1.f};
+  memcpy(picture->color, color ? color : white, sizeof(picture->color));
+  picture->additive = additive;
+}
+
+void hud_canvas_text(const char *text, float left, float top, const float color[3], bool shadow) {
+  if (canvas.text_count == CANVAS_TEXTS_MAX)
+    return;
+
+  CanvasText *entry = &canvas.texts[canvas.text_count++];
+  snprintf(entry->text, CANVAS_TEXT_MAX, "%s", text);
+  entry->left = left;
+  entry->top = top;
+  memcpy(entry->color, color, sizeof(entry->color));
+  entry->shadow = shadow;
+}
+
+void hud_canvas_region(const char *name, float left, float top, float width, float height,
+                       bool clickable) {
+  if (canvas.region_count == CANVAS_REGIONS_MAX)
+    return;
+
+  CanvasRegion *region = &canvas.regions[canvas.region_count++];
+  snprintf(region->name, CANVAS_NAME_MAX, "%s", name);
+  region->box = (Box){left, top, width, height};
+  region->clickable = clickable;
+}
+
+void hud_screen_size(float *width, float *height) {
+  *width = ui_width;
+  *height = ui_height;
+}
+
+float hud_scale() { return ui_scale; }
+
+float hud_line_height() { return pe_text_cell_height() / ui_scale; }
+
+static void draw_canvas_pictures() {
+  for (int i = 0; i < canvas.picture_count; i++) {
+    const CanvasPicture *picture = &canvas.pictures[i];
+    PUiQuad quad = {.image = picture->image,
+                    .x = picture->box.left * ui_scale,
+                    .y = picture->box.top * ui_scale,
+                    .width = picture->box.width * ui_scale,
+                    .height = picture->box.height * ui_scale,
+                    .u0 = picture->tex_coords[0],
+                    .u1 = picture->tex_coords[1],
+                    .v0 = picture->tex_coords[2],
+                    .v1 = picture->tex_coords[3],
+                    .blend = picture->additive ? PE_UI_BLEND_ADD : PE_UI_BLEND_ALPHA};
+    memcpy(quad.color, picture->color, sizeof(quad.color));
+    pe_ui_quad(&quad);
+  }
+}
+
+static void draw_canvas_text() {
+  for (int i = 0; i < canvas.text_count; i++) {
+    const CanvasText *entry = &canvas.texts[i];
+    float x = entry->left * ui_scale;
+    float y = entry->top * ui_scale + pe_text_ascent();
+    if (entry->shadow)
+      pe_text_draw(entry->text, (vec3){0.f, 0.f, 0.f}, x + SHADOW_OFFSET, y + SHADOW_OFFSET);
+    pe_text_draw(entry->text, (vec3){entry->color[0], entry->color[1], entry->color[2]}, x, y);
+  }
+}
+
+static bool box_contains(Box box, float x, float y) {
+  return x >= box.left && x <= box.left + box.width && y >= box.top && y <= box.top + box.height;
+}
+
+//the region under the pointer, the one added last when they overlap
+static int region_under(float x, float y) {
+  for (int i = canvas.region_count - 1; i >= 0; i--)
+    if (box_contains(canvas.regions[i].box, x, y))
+      return i;
+  return -1;
+}
+
+bool hud_canvas_hovered(const char *name) {
+  return hovered_region >= 0 && hovered_region < canvas.region_count &&
+         strcmp(canvas.regions[hovered_region].name, name) == 0;
+}
+
+//a notice is one line over the world that fades after a few seconds, the game's UIErrorsFrame
+#define NOTICE_SECONDS 3.f
+#define NOTICE_TOP_FRACTION 0.22f
+
+static struct {
+  char text[CANVAS_TEXT_MAX];
+  float color[3];
+  float remaining;
+} notice;
+
+void hud_notice(const char *text, const float color[3]) {
+  snprintf(notice.text, sizeof(notice.text), "%s", text);
+  memcpy(notice.color, color, sizeof(notice.color));
+  notice.remaining = NOTICE_SECONDS;
+}
+
+void hud_notice_tick(float seconds) {
+  notice.remaining -= seconds;
+  if (notice.remaining < 0.f)
+    notice.remaining = 0.f;
+}
+
+static void draw_notice() {
+  if (notice.remaining <= 0.f)
+    return;
+
+  float x = (ui_width * ui_scale - pe_text_width(notice.text)) * 0.5f;
+  float y = ui_height * NOTICE_TOP_FRACTION * ui_scale;
+  pe_text_draw(notice.text, (vec3){0.f, 0.f, 0.f}, x + SHADOW_OFFSET, y + SHADOW_OFFSET);
+  pe_text_draw(notice.text, (vec3){notice.color[0], notice.color[1], notice.color[2]}, x, y);
+}
+
 #define BUTTON_COUNT 2
 
 static int hovered_node = UI_SCREEN;
 static int pressed_node[BUTTON_COUNT] = {UI_SCREEN, UI_SCREEN};
+static char pressed_region[BUTTON_COUNT][CANVAS_NAME_MAX];
 static bool was_down[BUTTON_COUNT];
 
 static bool rect_contains(Rect rect, float x, float y) {
@@ -473,17 +665,26 @@ HudClick hud_update_mouse(float mouse_x, float mouse_y, bool left_down, bool rig
 
   pointer_x = mouse_x;
   pointer_y = mouse_y;
-  hovered_node = node_under(x, y);
+  hovered_region = region_under(x, mouse_y / ui_scale);
+  hovered_node = hovered_region >= 0 ? UI_SCREEN : node_under(x, y);
 
   for (int button = 0; button < BUTTON_COUNT; button++) {
-    if (down[button] && !was_down[button])
+    if (down[button] && !was_down[button]) {
       pressed_node[button] = hovered_node;
+      snprintf(pressed_region[button], CANVAS_NAME_MAX, "%s",
+               hovered_region >= 0 ? canvas.regions[hovered_region].name : "");
+    }
 
     if (!down[button] && was_down[button]) {
       int node = pressed_node[button];
       if (node != UI_SCREEN && node == hovered_node && ui_nodes[node].clickable)
         clicked = (HudClick){ui_nodes[node].name, button + 1};
       pressed_node[button] = UI_SCREEN;
+
+      if (hovered_region >= 0 && canvas.regions[hovered_region].clickable &&
+          strcmp(pressed_region[button], canvas.regions[hovered_region].name) == 0)
+        clicked = (HudClick){canvas.regions[hovered_region].name, button + 1};
+      pressed_region[button][0] = 0;
     }
     was_down[button] = down[button];
   }
@@ -493,8 +694,12 @@ HudClick hud_update_mouse(float mouse_x, float mouse_y, bool left_down, bool rig
 }
 
 bool hud_mouse_over_ui() {
-  return hovered_node != UI_SCREEN || pressed_node[0] != UI_SCREEN ||
-         pressed_node[1] != UI_SCREEN;
+  return hovered_node != UI_SCREEN || hovered_region >= 0 || pressed_node[0] != UI_SCREEN ||
+         pressed_node[1] != UI_SCREEN || pressed_region[0][0] || pressed_region[1][0];
+}
+
+bool hud_canvas_held(const char *name) {
+  return pressed_region[0][0] && strcmp(pressed_region[0], name) == 0 && hud_canvas_hovered(name);
 }
 
 #define TOOLTIP_LINES_MAX 8
@@ -524,6 +729,8 @@ void hud_tooltip_line(const char *text, const float color[3]) {
 }
 
 const char *hud_hovered_name() {
+  if (hovered_region >= 0)
+    return canvas.regions[hovered_region].name;
   return hovered_node == UI_SCREEN ? NULL : ui_nodes[hovered_node].name;
 }
 

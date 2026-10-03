@@ -129,7 +129,7 @@ static int find_record(const PWowDBC *dbc, u32 id) {
 }
 
 //ItemDisplayInfo's InventoryIcon, INV_Misc_Food_09 -> interface/icons/inv_misc_food_09.png
-static bool item_icon(const PWowInventory *inv, u32 entry, char *out, size_t size) {
+bool bags_item_icon(const PWowInventory *inv, u32 entry, char *out, size_t size) {
   const PWowItemTemplate *template = pe_wowinventory_template(inv, entry);
   if (!template || template->state != PE_WOWINV_TEMPLATE_KNOWN)
     return false;
@@ -151,7 +151,7 @@ static bool item_icon(const PWowInventory *inv, u32 entry, char *out, size_t siz
 
 static void show_icon(const PWowInventory *inv, int node, u32 entry, const char *empty) {
   char icon[160];
-  if (entry && item_icon(inv, entry, icon, sizeof(icon)))
+  if (entry && bags_item_icon(inv, entry, icon, sizeof(icon)))
     hud_set_node_texture(node, icon);
   else
     hud_set_node_texture(node, empty);
@@ -482,7 +482,7 @@ void bags_cancel_cursor(const PWowInventory *inv) {
 static void pick_up(const PWowInventory *inv, int bag, int slot) {
   PWowSlotView view = pe_wowinventory_slot(inv, bag, slot);
   char icon[160];
-  if (!view.filled || !item_icon(inv, view.entry, icon, sizeof(icon)))
+  if (!view.filled || !bags_item_icon(inv, view.entry, icon, sizeof(icon)))
     return;
 
   cursor.active = true;

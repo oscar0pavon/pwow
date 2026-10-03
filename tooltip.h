@@ -7,4 +7,7 @@
 //item of a bag, a bag button. call every frame, after hud_update_mouse()
 void tooltip_update(const PWowObjectState *state);
 
+//the game's colour for an item quality, poor to artifact
+const float *tooltip_quality_color(unsigned quality);
+
 #endif

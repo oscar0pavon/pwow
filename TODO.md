@@ -121,10 +121,11 @@ inventory side is `wowauth/wowinventory.c`.
 
 Not done, roughly in the order they would be wanted:
 
-1. **Targeting.** Nothing selects a creature: no click or Tab target, no
-   `CMSG_SET_SELECTION`, so the target frame is hidden, Attack does nothing and
-   a spell that needs a target fails on the server. `PWowCreature.stats`
-   already keeps every creature's health, level and power for the frame.
+1. **Targeting**: **partly done**. A left click selects a creature, sends
+   `CMSG_SET_SELECTION` and shows the target frame; right click talks to NPCs
+   (gossip, quests; see CLAUDE.md). Missing: Tab targeting, Attack and spells
+   using the target (`use_action_slot` still casts at nobody), the portrait, a
+   quest log.
 2. **Cursor item corners**: splitting a stack (the dialog), dropping an item on
    a bag button to equip a bag, on the paper doll, on the ground to destroy it;
    selling to a vendor.

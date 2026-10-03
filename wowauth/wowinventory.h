@@ -106,6 +106,10 @@ void pe_wowinventory_handle_destroy(PWowInventory *inv, const u8 *payload,
 //the entry of an owned item whose template was never asked for, or 0. the
 //caller sends the query and calls pe_wowinventory_mark_asked()
 u32 pe_wowinventory_next_unasked(PWowInventory *inv);
+
+//an item that is not owned, a quest's reward: its template is asked for with
+//the rest
+void pe_wowinventory_want_template(PWowInventory *inv, u32 entry);
 void pe_wowinventory_mark_asked(PWowInventory *inv, u32 entry);
 
 #endif

@@ -13,7 +13,37 @@ extra_textures="interface/buttons/ui-quickslot.png
   interface/containerframe/ui-backpackbackground.png
   interface/buttons/button-backpack-up.png
   interface/paperdoll/ui-paperdoll-slot-bag.png
-  interface/tooltips/ui-tooltip-border.png"
+  interface/tooltips/ui-tooltip-border.png
+  interface/buttons/ui-panel-button-up.png
+  interface/buttons/ui-panel-button-down.png
+  interface/buttons/ui-panel-button-highlight.png
+  interface/questframe/ui-quest-topleft.png
+  interface/questframe/ui-quest-topright.png
+  interface/questframe/ui-quest-botleft.png
+  interface/questframe/ui-quest-botright.png
+  interface/questframe/ui-questgreeting-topleft.png
+  interface/questframe/ui-questgreeting-topright.png
+  interface/questframe/ui-questgreeting-botleft.png
+  interface/questframe/ui-questgreeting-botright.png
+  interface/questframe/ui-horizontalbreak.png
+  interface/questframe/ui-quest-bulletpoint.png
+  interface/questframe/ui-questitemnameframe.png
+  interface/questframe/ui-questtitlehighlight.png
+  interface/questframe/ui-questitemhighlight.png
+  interface/moneyframe/ui-moneyicons.png
+  interface/gossipframe/availablequesticon.png
+  interface/gossipframe/activequesticon.png
+  interface/gossipframe/gossipgossipicon.png
+  interface/gossipframe/bankergossipicon.png
+  interface/gossipframe/battlemastergossipicon.png
+  interface/gossipframe/bindergossipicon.png
+  interface/gossipframe/healergossipicon.png
+  interface/gossipframe/petitiongossipicon.png
+  interface/gossipframe/tabardgossipicon.png
+  interface/gossipframe/taxigossipicon.png
+  interface/gossipframe/trainergossipicon.png
+  interface/gossipframe/unlearngossipicon.png
+  interface/gossipframe/vendorgossipicon.png"
 
 {
   for png in $extra_textures; do echo "texture $png"; done

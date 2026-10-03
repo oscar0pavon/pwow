@@ -44,6 +44,7 @@
 #define FIELD_PLAYER_COINAGE 1176
 #define FIELD_PLAYER_XP 716
 #define FIELD_PLAYER_NEXT_LEVEL_XP 717
+#define FIELD_UNIT_NPC_FLAGS 147
 #define FIELD_UNIT_DISPLAYID 131
 #define FIELD_UNIT_VIRTUAL_ITEM_SLOT_DISPLAY 37
 #define FIELD_UNIT_VIRTUAL_ITEM_INFO 40
@@ -323,6 +324,8 @@ static void apply_unit_update(PWowCreature *creature, const UnitUpdate *held) {
   apply_stats(&creature->stats, held);
   if (held->has_scale && held->scale > 0.0f)
     creature->scale = held->scale;
+  if (held->has_raw[FIELD_UNIT_NPC_FLAGS])
+    creature->npc_flags = held->raw[FIELD_UNIT_NPC_FLAGS];
   for (int slot = 0; slot < PE_WOWOBJECT_VIRTUAL_ITEM_SLOTS; slot++) {
     if (held->has_display[slot])
       creature->held.display[slot] = held->items.display[slot];
@@ -404,6 +407,25 @@ static PWowCreature *find_creature(PWowObjectState *state, u64 guid) {
     if (state->creatures[i].guid == guid)
       return &state->creatures[i];
   return NULL;
+}
+
+PWowCreature *pe_wowobject_find_creature(PWowObjectState *state, u64 guid) {
+  return find_creature(state, guid);
+}
+
+void pe_wowobject_handle_questgiver_status(PWowObjectState *state,
+                                           const u8 *payload, int payload_len) {
+  if (payload_len < 12)
+    return;
+
+  u64 guid;
+  u32 status;
+  memcpy(&guid, payload, sizeof(guid));
+  memcpy(&status, payload + 8, sizeof(status));
+
+  PWowCreature *creature = find_creature(state, guid);
+  if (creature)
+    creature->quest_status = status;
 }
 
 static PWowCreature *find_or_add_creature(PWowObjectState *state, u64 guid) {

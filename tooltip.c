@@ -6,6 +6,7 @@
 #include "actionbar.h"
 #include "bags.h"
 #include "hud.h"
+#include "questwindow.h"
 
 #define INVENTORY_TYPES 27
 #define BACKPACK_BUTTON "MainMenuBarBackpackButton"
@@ -30,13 +31,16 @@ static const char *const SLOT_NAMES[INVENTORY_TYPES] = {
     "Projectile", "Thrown",  "Ranged",
 };
 
+const float *tooltip_quality_color(unsigned quality) {
+  return QUALITY_COLORS[quality < 7 ? quality : 1];
+}
+
 static void show_item(const PWowInventory *inv, u32 entry, u32 player_level) {
   const PWowItemTemplate *template = pe_wowinventory_template(inv, entry);
   if (!template || template->state != PE_WOWINV_TEMPLATE_KNOWN)
     return;
 
-  unsigned quality = template->quality < 7 ? template->quality : 1;
-  hud_tooltip_line(template->name, QUALITY_COLORS[quality]);
+  hud_tooltip_line(template->name, tooltip_quality_color(template->quality));
 
   if (template->inventory_type > 0 && template->inventory_type < INVENTORY_TYPES &&
       SLOT_NAMES[template->inventory_type])
@@ -65,6 +69,12 @@ void tooltip_update(const PWowObjectState *state) {
   const char *name = hud_hovered_name();
   if (!name || !state->player_valid)
     return;
+
+  unsigned quest_item = quest_window_item_under(name, state);
+  if (quest_item) {
+    show_item(&state->inventory, quest_item, state->player.level);
+    return;
+  }
 
   int slot;
   if (sscanf(name, "ActionButton%d", &slot) == 1) {

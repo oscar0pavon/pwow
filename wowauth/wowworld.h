@@ -47,6 +47,7 @@ void pe_wowworld_close(PWowWorld *world);
 typedef struct PWowCharacter {
   u64 guid;
   char name[32];
+  u8 race, character_class, gender; //the game's own ids: race 6 is a Tauren, class 1 a warrior, gender 0 male
 } PWowCharacter;
 
 //sends CMSG_CHAR_ENUM and blocks for SMSG_CHAR_ENUM, filling out with
@@ -124,5 +125,47 @@ bool pe_wowworld_swap_item(PWowWorld *world, u8 dst_bag, u8 dst_slot, u8 src_bag
 //asks, without waiting, for the template of the first few owned items whose
 //kind was not asked about yet; the answers arrive through pe_wowworld_poll()
 void pe_wowworld_request_item_templates(PWowWorld *world, PWowObjectState *state);
+
+//CMSG_SET_SELECTION: who the player has targeted, 0 for nobody
+bool pe_wowworld_set_selection(PWowWorld *world, u64 guid);
+
+//talking to an NPC. none waits for an answer: it arrives through
+//pe_wowworld_poll() as state->dialog. a gossip option is the index the menu
+//gave, code the text of a coded one ("" for any other)
+bool pe_wowworld_gossip_hello(PWowWorld *world, u64 npc);
+bool pe_wowworld_gossip_select(PWowWorld *world, u64 npc, u32 option, const char *code);
+bool pe_wowworld_quest_query(PWowWorld *world, u64 npc, u32 quest);
+bool pe_wowworld_quest_accept(PWowWorld *world, u64 npc, u32 quest);
+bool pe_wowworld_quest_complete(PWowWorld *world, u64 npc, u32 quest);
+bool pe_wowworld_quest_reward(PWowWorld *world, u64 npc, u32 quest, u32 choice);
+bool pe_wowworld_quest_status_query(PWowWorld *world, u64 npc);
+
+//asks, without waiting, for what the screen is about to want: the text of a
+//gossip menu, the name of each kind of creature seen, the quest marker of each
+//quest giver, the templates of the items a quest names. a few per call
+void pe_wowworld_request_details(PWowWorld *world, PWowObjectState *state);
+
+//the movement the server hears about: the MSG_MOVE_* packets pwow sends
+typedef enum PWowMove {
+  PE_WOWMOVE_START_FORWARD,
+  PE_WOWMOVE_START_BACKWARD,
+  PE_WOWMOVE_STOP,
+  PE_WOWMOVE_START_STRAFE_LEFT,
+  PE_WOWMOVE_START_STRAFE_RIGHT,
+  PE_WOWMOVE_STOP_STRAFE,
+  PE_WOWMOVE_HEARTBEAT,
+  PE_WOWMOVE_SET_FACING,
+} PWowMove;
+
+#define PE_WOWMOVE_FLAG_FORWARD 0x1
+#define PE_WOWMOVE_FLAG_BACKWARD 0x2
+#define PE_WOWMOVE_FLAG_STRAFE_LEFT 0x4
+#define PE_WOWMOVE_FLAG_STRAFE_RIGHT 0x8
+
+//where the player is, in the game's axes (X north, Y west) and radians
+//(orientation counter clockwise from north). flags are the PE_WOWMOVE_FLAG_*
+//the player is moving by, time_ms any clock that only counts up
+bool pe_wowworld_send_move(PWowWorld *world, PWowMove move, u32 flags, u32 time_ms,
+                           float x, float y, float z, float orientation);
 
 #endif

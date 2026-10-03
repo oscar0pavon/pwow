@@ -64,6 +64,31 @@ void hud_set_cursor(const char *texture);
 //the pointer is over a button, or holds one: not the world's
 bool hud_mouse_over_ui();
 
+//what the code lays out by itself, for the windows the game builds with Lua at
+//run time: pictures, text and the regions that take the pointer, in the units of
+//the frames with the origin at the top left and y down. the code clears it and
+//fills it again every update; it is drawn over the frames and under the tooltip
+void hud_canvas_clear();
+//texture NULL for a plain colour. tex_coords left, right, top, bottom, NULL for the whole picture
+void hud_canvas_picture(const char *texture, float left, float top, float width, float height,
+                        const float tex_coords[4], const float color[4], bool additive);
+//top is the top of the line; one size for all text. a shadow is for text over the world, not over paper
+void hud_canvas_text(const char *text, float left, float top, const float color[3], bool shadow);
+//a region takes the pointer, and a clickable one answers a click with its name
+void hud_canvas_region(const char *name, float left, float top, float width, float height,
+                       bool clickable);
+bool hud_canvas_hovered(const char *name);
+//the left button is down on it and the pointer still over it
+bool hud_canvas_held(const char *name);
+//the size of the screen in the units of the frames, and the pixels of one unit
+void hud_screen_size(float *width, float *height);
+float hud_scale();
+float hud_line_height();
+
+//a line over the world for a few seconds, the game's UIErrorsFrame
+void hud_notice(const char *text, const float color[3]);
+void hud_notice_tick(float seconds);
+
 //the pictures first, then the text from inside the frame's one
 //pe_text_begin()/pe_text_end() pair, so the text lies over them
 void hud_draw_images(PRenderTarget *target, VkCommandBuffer command,

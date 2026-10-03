@@ -167,9 +167,13 @@ The backpack's money frame is `MoneyFrame.lua`'s `MoneyFrame_Update` for the sma
 
 Not the game's `GameTooltip` (which Lua fills) but a few lines drawn by the pointer in `hud.c` (`hud_tooltip_line()`, cleared and refilled every frame by `tooltip.c` for what `hud_hovered_name()` says the pointer is over): a dark fill under the border of `UI-Tooltip-Border`, a strip of eight 16 pixel pieces (left, right, top, bottom, four corners) whose top and bottom are stored a quarter turn, which `PUiQuad.transpose_uv` draws. The lines are the spell's name and rank (action bar), the item's name in its quality colour, where it is worn and the level it needs (bags), the bag (bag buttons). No stats, descriptions, binding, durability, price or comparison: the item template parse stops after the container slots.
 
+### Targeting, talking and quests
+
+A left click on the world (a press let go after less than 4 pixels of drag, `main.c`'s `world_click()`; more is the camera turning) casts a ray through the pointer (`targeting.c`) and picks the nearest creature's capsule, sends `CMSG_SET_SELECTION` and fills the target frame (name from `CMSG_CREATURE_QUERY`, level, health, power). A right click on an NPC with the gossip or quest giver flag (`UNIT_NPC_FLAGS`, field 147) within 8 yards sends `CMSG_GOSSIP_HELLO`. `wowauth/wowdialog.c` folds the answers into `state->dialog`: `SMSG_GOSSIP_MESSAGE` (+ `NPC_TEXT_UPDATE` for its greeting), `QUESTGIVER_QUEST_LIST`, `QUEST_DETAILS`, `REQUEST_ITEMS`, `OFFER_REWARD`, `QUEST_COMPLETE`. `questwindow.c` draws it on the hud's **canvas** (`hud_canvas_*`: pictures, text and mouse regions laid out by code every update, since QuestFrame's text wraps and scrolls and is Lua-filled), with the QuestGreeting parchment (all panels use it; `UI-Quest-*` is the dark material backdrop), `$N $R $C $B $g` expanded, wheel scrolling and reward item tooltips. A list row for a quest that can be taken sends `QUERY_QUEST`, one under way `COMPLETE_QUEST`; Accept, Continue and Complete Quest send the matching packets. `questmarks.c` puts the `!`/`?` over quest givers from `SMSG_QUESTGIVER_STATUS`. The server only lets the player talk to an NPC near where *it* thinks the player is, so `main.c` sends `MSG_MOVE_*` packets (on key changes, a heartbeat every 0.5 s). Not done: the quest log, objective tracking, vendor/trainer/taxi windows behind gossip options, coded options, reward XP display, the NPC portrait.
+
 ### Not done
 
-Micro buttons, the portrait, a target and the target frame's data, pet and party frames, chat, item and spell details in tooltips, the keyring and the bank, the paper doll, text in the XML's sizes.
+Micro buttons, the portrait, pet and party frames, chat, item and spell details in tooltips, the keyring and the bank, the paper doll, text in the XML's sizes.
 
 ## Conventions
 

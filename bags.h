@@ -32,4 +32,7 @@ void bags_cancel_cursor(const PWowInventory *inventory);
 //empty one or for any other name; is_bag_button says it was one of the bar's
 u32 bags_item_under(const char *name, const PWowInventory *inventory, bool *is_bag_button);
 
+//the icon of an item kind, interface/icons/<name>.png, once its template is known
+bool bags_item_icon(const PWowInventory *inventory, u32 entry, char *out, size_t size);
+
 #endif

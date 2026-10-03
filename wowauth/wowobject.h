@@ -4,6 +4,7 @@
 #include <engine/numbers.h>
 #include <stdbool.h>
 
+#include "wowdialog.h"
 #include "wowinventory.h"
 
 //ongoing world state, the third phase after wowauth's login and wowworld's
@@ -48,6 +49,21 @@ typedef struct PWowUnitStats {
 
 #define PE_WOWOBJECT_ACTION_BUTTONS 120
 
+//UnitNPCFlags
+#define PE_WOWOBJECT_NPC_GOSSIP 0x01
+#define PE_WOWOBJECT_NPC_QUESTGIVER 0x02
+
+//the quest marker above a quest giver, the game's DIALOG_STATUS_*: none, a
+//quest the player is too low for, a chat, one under way, one to hand in
+//(without and with a reputation), one to take
+#define PE_WOWOBJECT_QUEST_NONE 0
+#define PE_WOWOBJECT_QUEST_UNAVAILABLE 1
+#define PE_WOWOBJECT_QUEST_CHAT 2
+#define PE_WOWOBJECT_QUEST_INCOMPLETE 3
+#define PE_WOWOBJECT_QUEST_REWARD_REP 4
+#define PE_WOWOBJECT_QUEST_AVAILABLE 5
+#define PE_WOWOBJECT_QUEST_REWARD 6
+
 typedef struct PWowCreature {
   u64 guid;
   u32 entry;
@@ -55,6 +71,9 @@ typedef struct PWowCreature {
   PWowVirtualItems held;
   PWowUnitStats stats;
   float scale; //OBJECT_FIELD_SCALE_X, the size the server sets for this unit, 1 by default
+  u32 npc_flags; //UNIT_NPC_FLAGS: what it offers (PE_WOWOBJECT_NPC_*)
+  u32 quest_status; //the last SMSG_QUESTGIVER_STATUS (PE_WOWOBJECT_QUEST_*)
+  bool quest_status_asked;
   float x, y, z, o; //what creatures_sync() actually reads - the interpolated
                     //display position/facing, kept current every frame by
                     //pe_wowobject_state_tick() while moving below is set
@@ -120,6 +139,8 @@ typedef struct PWowObjectState {
   u32 action_buttons_serial;
 
   PWowInventory inventory;
+  PWowDialog dialog;
+  PWowNames names;
 } PWowObjectState;
 
 //parses one SMSG_ACTION_BUTTONS payload into state
@@ -140,6 +161,13 @@ void pe_wowobject_set_local_player_guid(PWowObjectState *state, u64 guid);
 //blocks already applied earlier in it is kept
 void pe_wowobject_handle_packet(PWowObjectState *state, const u8 *payload,
                                 int payload_len, bool compressed);
+
+//SMSG_QUESTGIVER_STATUS: the guid, then the status as a dword
+void pe_wowobject_handle_questgiver_status(PWowObjectState *state,
+                                           const u8 *payload, int payload_len);
+
+//the creature with this guid, NULL if it is not tracked
+PWowCreature *pe_wowobject_find_creature(PWowObjectState *state, u64 guid);
 
 //parses one SMSG_MONSTER_MOVE payload and starts (or, for a "stop" packet,
 //cancels) the named creature's interpolated move. a guid this has not seen
