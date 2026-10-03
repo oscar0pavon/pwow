@@ -8,7 +8,10 @@
 # prepare_tile.sh converts terrain. no arguments: resolve_creatures finds
 # everything itself from the DBCs, a few hundred models total, so this
 # converts them all in one bounded pass, same as prepare_character.sh. a
-# model or texture already converted is left alone.
+# model or texture already converted is left alone. m22gltf is given
+# AnimationData.dbc so a clip is named after its sequence (Stand, Walk, Run):
+# without it every clip is "anim_<n>" and creatures.c cannot tell them apart.
+# a model converted before that has to be deleted to be converted again.
 set -e
 
 GAME_DATA=${GAME_DATA:-/root/sources/WoWee/Data/expansions/classic}
@@ -67,7 +70,7 @@ convert_model() {
     return
   fi
 
-  lines=$("$here/m22gltf" "$GAME_DATA" "$model" "$out") || status=$?
+  lines=$("$here/m22gltf" "$GAME_DATA" "$model" "$out" "$DBC_SOURCE/AnimationData.dbc") || status=$?
   if [ "$status" -eq 3 ]; then
     return
   fi
