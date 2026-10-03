@@ -1,0 +1,170 @@
+#include "attached.h"
+
+#include <engine/animation/animation.h>
+#include <engine/array.h>
+#include <engine/images.h>
+#include <engine/macros.h>
+#include <engine/renderer/descriptor_set.h>
+#include <engine/renderer/draw.h>
+#include <engine/renderer/uniform_buffer.h>
+#include <engine/renderer/vk_images.h>
+
+#include <stdio.h>
+#include <string.h>
+#include <unistd.h>
+
+static PShader attached_shader;
+
+void attached_init(PShader shader) { attached_shader = shader; }
+
+//---------------------------------------------------------------------------
+//attachment points
+//---------------------------------------------------------------------------
+
+bool attachment_points_load(const char *glb_path, PAttachmentPoints *out) {
+  out->count = 0;
+
+  char path[512];
+  snprintf(path, sizeof(path), "%s", glb_path);
+  char *extension = strrchr(path, '.');
+  if (!extension)
+    return false;
+  strcpy(extension, ".att");
+
+  FILE *file = fopen(path, "r");
+  if (!file)
+    return false;
+
+  while (out->count < ATTACHMENT_POINTS_MAX) {
+    PAttachmentPoint *point = &out->points[out->count];
+    if (fscanf(file, "%u %u %f %f %f", &point->id, &point->joint,
+               &point->position[0], &point->position[1],
+               &point->position[2]) != 5)
+      break;
+    out->count++;
+  }
+
+  fclose(file);
+  return true;
+}
+
+const PAttachmentPoint *attachment_points_find(const PAttachmentPoints *points,
+                                               u32 id) {
+  for (int i = 0; i < points->count; i++)
+    if (points->points[i].id == id)
+      return &points->points[i];
+  return NULL;
+}
+
+void attachment_matrix(const PSkin *body, const PAttachmentPoint *point,
+                       mat4 out) {
+  glm_mat4_copy((vec4 *)body->node_uniform.joints_matrix[point->joint], out);
+  glm_translate(out, (float *)point->position);
+}
+
+//---------------------------------------------------------------------------
+//one loaded mesh per model, shared by every instance of it
+//---------------------------------------------------------------------------
+
+typedef struct AttachedTemplate {
+  char glb_path[256];
+  PModel model;
+  PSkin skin;
+} AttachedTemplate;
+
+#define ATTACHED_TEMPLATES_MAX 32
+static AttachedTemplate attached_templates[ATTACHED_TEMPLATES_MAX];
+static int attached_template_count;
+
+//an instance copies its template's texture and binds it into its descriptor
+//sets as it is made, so the template needs a real one, though no instance
+//keeps it
+static AttachedTemplate *find_or_load_template(const char *glb_path,
+                                               const char *texture_png) {
+  for (int i = 0; i < attached_template_count; i++)
+    if (strcmp(attached_templates[i].glb_path, glb_path) == 0)
+      return &attached_templates[i];
+
+  if (attached_template_count >= ATTACHED_TEMPLATES_MAX)
+    return NULL;
+
+  AttachedTemplate *template = &attached_templates[attached_template_count++];
+  snprintf(template->glb_path, sizeof(template->glb_path), "%s", glb_path);
+  pe_vk_load_skin(&template->skin, &template->model, glb_path);
+  template->model.shader = attached_shader;
+  pe_load_texture(texture_png, &template->model.texture);
+  return template;
+}
+
+bool attached_create(PAttachedModel *out, const char *glb_path,
+                     const char *texture_png) {
+  if (access(glb_path, R_OK) != 0 || access(texture_png, R_OK) != 0)
+    return false;
+
+  AttachedTemplate *template = find_or_load_template(glb_path, texture_png);
+  if (!template)
+    return false;
+
+  pe_vk_skin_instance(&out->skin, &template->skin);
+  pe_vk_skin_create_storage_buffers(&out->skin);
+  pe_vk_model_instance_skinned(&out->model, &template->model, &out->skin);
+
+  pe_load_texture(texture_png, &out->model.texture);
+  pe_vk_descriptor_skinned_update(&out->model, &out->skin, &main_render_target);
+
+  //skinned.vert's weighted sum of joint matrices has no safe zero fallback,
+  //and this storage buffer starts zeroed
+  if (out->skin.joints.count > 0)
+    pe_anim_nodes_update(&out->skin);
+  return true;
+}
+
+void attached_release(PAttachedModel *attached) {
+  vkDeviceWaitIdle(vk_device);
+
+  for (int i = 0; i < attached->model.uniform_buffers_memory.count; i++) {
+    VkDeviceMemory *memory = array_get(&attached->model.uniform_buffers_memory, i);
+    vkFreeMemory(vk_device, *memory, NULL);
+  }
+  vkDestroyDescriptorPool(vk_device, attached->model.descriptor_pool, NULL);
+
+  for (int i = 0; i < attached->skin.shader_storage_buffers_memory.count; i++) {
+    VkDeviceMemory *memory =
+        array_get(&attached->skin.shader_storage_buffers_memory, i);
+    vkFreeMemory(vk_device, *memory, NULL);
+  }
+
+  pe_vk_clean_image(&attached->model.texture);
+}
+
+//---------------------------------------------------------------------------
+//drawing
+//---------------------------------------------------------------------------
+
+void skinned_model_draw(PModel *model, PSkin *skin, VkCommandBuffer *command,
+                        uint32_t image_index, mat4 view, mat4 projection) {
+  //this model's own joint matrices, computed for this frame by
+  //play_animation_list() off its own animation clock
+  pe_vk_skin_send_storage_buffer(skin, image_index);
+
+  PUniformBufferObject *ubo = &model->uniform_buffer_object;
+  glm_mat4_copy(model->model_mat, ubo->model);
+  glm_mat4_copy(view, ubo->view);
+  glm_mat4_copy(projection, ubo->projection);
+
+  //same guessed-sun-direction light placement player_draw() uses
+  vec3 light_position;
+  glm_vec3_copy(model->model_mat[3], light_position);
+  glm_vec3_muladds((vec3){0.4f, -0.3f, 0.8f}, 5000.0f, light_position);
+  glm_vec4(light_position, 1, ubo->light_position);
+
+  pe_vk_send_uniform_buffer(model, image_index);
+
+  PDrawModelCommand draw;
+  ZERO(draw);
+  draw.model = model;
+  draw.layout = pe_vk_pipeline_layout_skinned;
+  draw.command_buffer = *command;
+  draw.image_index = image_index;
+  pe_vk_draw_model(&draw);
+}

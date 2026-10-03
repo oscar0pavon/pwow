@@ -7,10 +7,8 @@
 #include <engine/macros.h>
 #include <engine/model.h>
 #include <engine/renderer/descriptor_set.h>
-#include <engine/renderer/draw.h>
 #include <engine/renderer/pipeline.h>
 #include <engine/renderer/shaders.h>
-#include <engine/renderer/uniform_buffer.h>
 #include <engine/renderer/vk_images.h>
 #include <engine/renderer/vk_vertex.h>
 #include <engine/renderer/vulkan.h>
@@ -18,7 +16,9 @@
 #include <engine/vertex.h>
 #include <wowauth/wowdbc.h>
 
+#include "attached.h"
 #include "equipment.h"
+#include "gamedata.h"
 
 #include <ctype.h>
 #include <float.h>
@@ -61,6 +61,13 @@ static const float HUMANOID_FOOT_OFFSETS[] = {
 static const char *const HUMANOID_MODEL_PATHS[] = {
     [SEX_MALE] = "data/character/tauren/male/taurenmale.glb",
     [SEX_FEMALE] = "data/character/tauren/female/taurenfemale.glb",
+};
+
+//the spelling a Tauren male and female have in an item model's file name:
+//helm_leather_a_02_tam.m2 and helm_leather_a_02_taf.m2
+static const char *const ITEM_MODEL_SUFFIXES[] = {
+    [SEX_MALE] = "_tam",
+    [SEX_FEMALE] = "_taf",
 };
 
 //the equipment columns of CreatureDisplayInfoExtra, each an ItemDisplayInfo
@@ -408,6 +415,9 @@ typedef struct CreatureInstance {
   //a humanoid has its own index buffer and composited texture, which
   //equipment rewrites per creature; a simple creature shares its template's
   bool dressed;
+  PAttachedModel helm;
+  PAttachmentPoint helm_point;
+  bool has_helm;
   bool used;
 } CreatureInstance;
 
@@ -436,6 +446,9 @@ static void release_creature_instance(CreatureInstance *inst) {
         array_get(&inst->skin.shader_storage_buffers_memory, i);
     vkFreeMemory(vk_device, *memory, NULL);
   }
+
+  if (inst->has_helm)
+    attached_release(&inst->helm);
 
   if (!inst->dressed)
     return;
@@ -484,6 +497,7 @@ void creatures_init(void) {
   create_creature_shader(&creature_shader, file_diffuse_frag_spv);
   //a humanoid's hair, mane and cloth are alpha-cut, as the player's are
   create_creature_shader(&humanoid_shader, file_diffuse_cutout_frag_spv);
+  attached_init(humanoid_shader);
 }
 
 //seeds a real pose immediately: skinned.vert's weighted sum of joint matrices
@@ -507,6 +521,7 @@ static bool create_simple_instance(CreatureInstance *inst,
   inst->clips = template->clips;
   inst->foot_offset = template->foot_offset;
   inst->dressed = false;
+  inst->has_helm = false;
   return true;
 }
 
@@ -517,6 +532,7 @@ typedef struct HumanoidTemplate {
   PModel model;
   PSkin skin;
   ClipSet clips;
+  PAttachmentPoints points;
 } HumanoidTemplate;
 
 static HumanoidTemplate humanoid_templates[SEX_FEMALE + 1];
@@ -537,6 +553,7 @@ static HumanoidTemplate *find_or_load_humanoid_template(u8 sex) {
   pe_load_texture(skin_path, &template->model.texture);
 
   resolve_clips(&template->skin, &template->clips);
+  attachment_points_load(HUMANOID_MODEL_PATHS[sex], &template->points);
   template->loaded = true;
   return template;
 }
@@ -548,6 +565,56 @@ static void give_own_index_buffer(PModel *model) {
   model->index_buffer = pe_vk_create_buffer(model->index_array.bytes_size,
                                             model->index_array.data,
                                             VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
+}
+
+//"Helm_Leather_A_02.mdx" in folder "head" for a male is the base of its
+//converted files, item/objectcomponents/head/helm_leather_a_02_tam, and a
+//texture's name is the same without the suffix
+static void item_component_base(char *out, size_t size, const char *folder,
+                                const char *name, const char *suffix) {
+  char lower[64];
+  snprintf(lower, sizeof(lower), "%s", name);
+  lowercase(lower);
+
+  size_t length = strlen(lower);
+  if (length > 4 && strcmp(lower + length - 4, ".mdx") == 0)
+    lower[length - 4] = '\0';
+
+  snprintf(out, size, "item/objectcomponents/%s/%s%s", folder, lower, suffix);
+}
+
+//draws the helm an item names at the body's head, where the model's own file
+//gives the point. a helm that cannot be converted is simply not drawn
+static void attach_helm(CreatureInstance *inst, const HumanoidTemplate *template,
+                        const ResolvedDisplay *resolved) {
+  const PItemDisplayInfo *helm = NULL;
+  for (int i = 0; i < resolved->item_count; i++)
+    if (resolved->items[i].inventory_type == INVTYPE_HEAD)
+      helm = &resolved->items[i].display;
+  if (!helm || helm->model[0] == '\0' || helm->model_texture[0] == '\0')
+    return;
+
+  const PAttachmentPoint *point =
+      attachment_points_find(&template->points, ATTACHMENT_HELM);
+  if (!point)
+    return;
+
+  char model_base[256], texture_base[256];
+  item_component_base(model_base, sizeof(model_base), "head", helm->model,
+                      ITEM_MODEL_SUFFIXES[resolved->look.sex]);
+  item_component_base(texture_base, sizeof(texture_base), "head",
+                      helm->model_texture, "");
+  if (!gamedata_ensure_model(model_base) || !gamedata_ensure_png(texture_base))
+    return;
+
+  char glb_path[300], texture_path[300];
+  snprintf(glb_path, sizeof(glb_path), "data/%s.glb", model_base);
+  snprintf(texture_path, sizeof(texture_path), "data/%s.png", texture_base);
+  if (!attached_create(&inst->helm, glb_path, texture_path))
+    return;
+
+  inst->helm_point = *point;
+  inst->has_helm = true;
 }
 
 //an instance of its sex's body, dressed from its CreatureDisplayInfoExtra
@@ -575,6 +642,8 @@ static bool create_humanoid_instance(CreatureInstance *inst,
   inst->clips = template->clips;
   inst->foot_offset = HUMANOID_FOOT_OFFSETS[resolved->look.sex];
   inst->dressed = true;
+  inst->has_helm = false;
+  attach_helm(inst, template, resolved);
   return true;
 }
 
@@ -661,35 +730,21 @@ void creatures_sync(const PWowObjectState *npc_state) {
 void creatures_draw(VkCommandBuffer *command, uint32_t image_index,
                     mat4 view, mat4 projection) {
   for (int s = 0; s < CREATURE_INSTANCES_MAX; s++) {
-    if (!creature_instances[s].used)
+    CreatureInstance *inst = &creature_instances[s];
+    if (!inst->used)
       continue;
 
-    //this instance's own joint matrices, computed for this frame by
-    //play_animation_list() (main.c) off its own animation clock - one
-    //upload per instance, not per species, now that each has its own
-    //storage buffer
-    pe_vk_skin_send_storage_buffer(&creature_instances[s].skin, image_index);
+    skinned_model_draw(&inst->model, &inst->skin, command, image_index, view,
+                       projection);
 
-    PModel *instance = &creature_instances[s].model;
-    PUniformBufferObject *ubo = &instance->uniform_buffer_object;
-    glm_mat4_copy(instance->model_mat, ubo->model);
-    glm_mat4_copy(view, ubo->view);
-    glm_mat4_copy(projection, ubo->projection);
+    if (!inst->has_helm)
+      continue;
 
-    //same guessed-sun-direction light placement player_draw() uses
-    vec3 light_position;
-    glm_vec3_copy(instance->model_mat[3], light_position);
-    glm_vec3_muladds((vec3){0.4f, -0.3f, 0.8f}, 5000.0f, light_position);
-    glm_vec4(light_position, 1, ubo->light_position);
-
-    pe_vk_send_uniform_buffer(instance, image_index);
-
-    PDrawModelCommand draw;
-    ZERO(draw);
-    draw.model = instance;
-    draw.layout = pe_vk_pipeline_layout_skinned;
-    draw.command_buffer = *command;
-    draw.image_index = image_index;
-    pe_vk_draw_model(&draw);
+    //the body's placement, then its head as posed this frame, then the helm
+    mat4 attachment;
+    attachment_matrix(&inst->skin, &inst->helm_point, attachment);
+    glm_mat4_mul(inst->model.model_mat, attachment, inst->helm.model.model_mat);
+    skinned_model_draw(&inst->helm.model, &inst->helm.skin, command,
+                       image_index, view, projection);
   }
 }

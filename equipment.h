@@ -68,6 +68,10 @@ void resolve_tauren_body(const PAppearance *look, PBodyLayers *out);
 //not re-queried every frame
 typedef struct PItemDisplayInfo {
   u32 geoset_group1, geoset_group3;
+  //the model an item is drawn as, apart from the body (a helm, a shoulder,
+  //a weapon) and its texture, as the game spells them: "Helm_Leather_A_02.mdx"
+  //and "Helm_Leather_A_02Blue". empty for an item that is only body art
+  char model[64], model_texture[64];
   char texture_torso_upper[64], texture_torso_lower[64];
   char texture_leg_upper[64], texture_leg_lower[64];
   char texture_arm_upper[64], texture_arm_lower[64];

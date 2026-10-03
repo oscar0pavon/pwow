@@ -1,5 +1,7 @@
 #include "equipment.h"
 
+#include "gamedata.h"
+
 #include <engine/macros.h>
 #include <engine/renderer/descriptor_set.h>
 #include <engine/renderer/vk_images.h>
@@ -7,11 +9,8 @@
 #include <wowauth/wowdbc.h>
 
 #include <ctype.h>
-#include <fcntl.h>
 #include <stdio.h>
 #include <string.h>
-#include <sys/stat.h>
-#include <sys/wait.h>
 #include <unistd.h>
 
 //---------------------------------------------------------------------------
@@ -158,6 +157,8 @@ void resolve_tauren_body(const PAppearance *look, PBodyLayers *out) {
 //polish" item 4)
 #define ITEMDISPLAYINFO_DBC_PATH "data/dbc/ItemDisplayInfo.dbc"
 #define ITEMDISPLAYINFO_FIELD_ID 0
+#define ITEMDISPLAYINFO_FIELD_MODEL 1
+#define ITEMDISPLAYINFO_FIELD_MODEL_TEXTURE 3
 #define ITEMDISPLAYINFO_FIELD_GEOSET_GROUP1 6
 #define ITEMDISPLAYINFO_FIELD_GEOSET_GROUP3 8
 #define ITEMDISPLAYINFO_FIELD_TEXTURE_ARM_UPPER 14
@@ -186,6 +187,10 @@ bool resolve_item_display_info(u32 display_info_id, PItemDisplayInfo *out) {
     if (pe_wowdbc_get_u32(&dbc, r, ITEMDISPLAYINFO_FIELD_ID) != display_info_id)
       continue;
 
+    copy_dbc_texture_field(&dbc, r, ITEMDISPLAYINFO_FIELD_MODEL, out->model,
+                           sizeof(out->model));
+    copy_dbc_texture_field(&dbc, r, ITEMDISPLAYINFO_FIELD_MODEL_TEXTURE,
+                           out->model_texture, sizeof(out->model_texture));
     out->geoset_group1 =
         pe_wowdbc_get_u32(&dbc, r, ITEMDISPLAYINFO_FIELD_GEOSET_GROUP1);
     out->geoset_group3 =
@@ -411,70 +416,6 @@ void apply_equipment_geosets(PModel *model, const PEquippedItem *items,
 //onto the base skin (WoWee's compositeWithRegions() is the reference)
 //---------------------------------------------------------------------------
 
-//creates path and every missing parent directory, tolerating "already
-//exists" - the only place pwow creates a directory at runtime; every other
-//data/ path is a prepare_*.sh script's job, done offline before pwow ever
-//runs, but an item's region art is only named once the live server sends
-//it (or, for a humanoid creature, once CreatureDisplayInfoExtra.dbc is
-//read), so there is no offline step that could have converted it ahead of
-//time
-static void make_directories(const char *path) {
-  char buf[512];
-  snprintf(buf, sizeof(buf), "%s", path);
-  for (char *p = buf + 1; *p; p++) {
-    if (*p == '/') {
-      *p = '\0';
-      mkdir(buf, 0755);
-      *p = '/';
-    }
-  }
-  mkdir(buf, 0755);
-}
-
-static bool copy_file(const char *from, const char *to) {
-  FILE *in = fopen(from, "rb");
-  if (!in)
-    return false;
-  FILE *out = fopen(to, "wb");
-  if (!out) {
-    fclose(in);
-    return false;
-  }
-  char buf[65536];
-  size_t n;
-  while ((n = fread(buf, 1, sizeof(buf), in)) > 0)
-    fwrite(buf, 1, n, out);
-  fclose(in);
-  fclose(out);
-  return true;
-}
-
-//runs argv[0] with argv, no shell involved - argv[] is built from a fixed
-//tool path plus a texture name that ultimately comes off the wire
-//(ItemDisplayInfo.dbc, read by entry the local server names), so this
-//never goes through a shell to interpolate it into. blocks for the child;
-//true if it exited 0
-static bool run_tool(char *const argv[]) {
-  pid_t pid = fork();
-  if (pid < 0)
-    return false;
-  if (pid == 0) {
-    int devnull = open("/dev/null", O_WRONLY);
-    if (devnull >= 0) {
-      dup2(devnull, STDOUT_FILENO);
-      dup2(devnull, STDERR_FILENO);
-    }
-    execv(argv[0], argv);
-    _exit(127);
-  }
-  int status;
-  waitpid(pid, &status, 0);
-  return WIFEXITED(status) && WEXITSTATUS(status) == 0;
-}
-
-#define GAME_DATA_PATH_DEFAULT "/root/sources/WoWee/Data/expansions/classic"
-#define BLP_CONVERT_PATH_DEFAULT "/root/sources/WoWee/build/bin/blp_convert"
-
 //one of ItemDisplayInfo's 8 texture-region columns: the folder under
 //Item\TextureComponents (item_textures.hpp), lowercased and without the
 //backslashes - this repo's extracted game data tree is lowercase
@@ -515,43 +456,16 @@ static bool resolve_item_region_texture(const PItemRegion *region, u8 sex,
   for (char *c = lower; *c; c++)
     *c = (char)tolower((unsigned char)*c);
 
-  const char *game_data = getenv("GAME_DATA");
-  if (!game_data)
-    game_data = GAME_DATA_PATH_DEFAULT;
-  const char *blp_convert = getenv("BLP_CONVERT");
-  if (!blp_convert)
-    blp_convert = BLP_CONVERT_PATH_DEFAULT;
-
   const char *suffixes[] = {sex == SEX_FEMALE ? "_f" : "_m", "_u", ""};
   for (int s = 0; s < 3; s++) {
-    char source_blp[512];
-    snprintf(source_blp, sizeof(source_blp),
-            "%s/item/texturecomponents/%s/%s%s.blp", game_data,
-            region->folder, lower, suffixes[s]);
-    if (access(source_blp, F_OK) != 0)
+    char base[512];
+    snprintf(base, sizeof(base), "item/texturecomponents/%s/%s%s",
+             region->folder, lower, suffixes[s]);
+    if (!gamedata_ensure_png(base))
       continue;
 
-    char dest_dir[480];
-    snprintf(dest_dir, sizeof(dest_dir), "data/item/texturecomponents/%s",
-            region->folder);
-    char dest_base[512];
-    snprintf(dest_base, sizeof(dest_base), "%s/%s%s", dest_dir, lower,
-            suffixes[s]);
-    snprintf(out, out_size, "%s.png", dest_base);
-
-    if (access(out, F_OK) == 0)
-      return true; //converted already, by an earlier equip of the same item
-
-    make_directories(dest_dir);
-    char dest_blp[532];
-    snprintf(dest_blp, sizeof(dest_blp), "%s.blp", dest_base);
-    if (!copy_file(source_blp, dest_blp))
-      return false;
-
-    char *argv[] = {(char *)blp_convert, "--to-png", dest_blp, NULL};
-    bool ok = run_tool(argv);
-    remove(dest_blp);
-    return ok && access(out, F_OK) == 0;
+    snprintf(out, out_size, "data/%s.png", base);
+    return true;
   }
   return false;
 }
