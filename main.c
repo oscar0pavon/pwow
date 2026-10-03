@@ -24,6 +24,7 @@
 #include <string.h>
 
 #include "camera.h"
+#include "attached.h"
 #include "creatures.h"
 #include "equipment.h"
 #include "input.h"
@@ -146,6 +147,74 @@ typedef struct PlayerEquipSlot {
 
 static PlayerEquipSlot player_equip_slots[PE_WOWOBJECT_PLAYER_EQUIP_SLOTS];
 
+//Player::EquipmentSlots' main hand and off hand: what the character holds in
+//its hands. the ranged slot is carried on the back and not drawn yet
+#define PLAYER_SLOT_MAIN_HAND 15
+#define PLAYER_SLOT_OFF_HAND 16
+
+static PAttachmentPoints player_points;
+
+//one weapon or shield in a hand slot, carried at sheathed until the character
+//attacks and then held at drawn
+typedef struct PlayerHeldItem {
+  PAttachedItem attached;
+  PAttachmentPoint drawn, sheathed;
+} PlayerHeldItem;
+
+static PlayerHeldItem player_held[ATTACHED_ITEMS_MAX];
+static int player_held_count;
+static bool player_weapons_drawn;
+
+//a shield and a two handed weapon ride on the back, the main hand's other
+//weapons on the right hip and the off hand's on the left
+static u32 sheath_point_of(int slot, u32 inventory_type) {
+  if (inventory_type == INVTYPE_SHIELD)
+    return ATTACHMENT_SHEATH_SHIELD;
+  if (inventory_type == INVTYPE_2HWEAPON)
+    return ATTACHMENT_LARGE_WEAPON_RIGHT;
+  return slot == PLAYER_SLOT_MAIN_HAND ? ATTACHMENT_HIP_WEAPON_RIGHT
+                                       : ATTACHMENT_HIP_WEAPON_LEFT;
+}
+
+//the main hand's item goes in the right hand, the off hand's in the left, or on
+//the arm for a shield; redone whenever equipment changes
+static void sync_player_held_items() {
+  for (int i = 0; i < player_held_count; i++)
+    attached_release(&player_held[i].attached.model);
+  player_held_count = 0;
+
+  for (int slot = PLAYER_SLOT_MAIN_HAND; slot <= PLAYER_SLOT_OFF_HAND; slot++) {
+    PlayerEquipSlot *equip = &player_equip_slots[slot];
+    if (!equip->have_display)
+      continue;
+
+    bool shield = equip->info.inventory_type == INVTYPE_SHIELD;
+    u32 drawn = shield ? ATTACHMENT_SHIELD
+                       : (slot == PLAYER_SLOT_MAIN_HAND ? ATTACHMENT_RIGHT_HAND
+                                                        : ATTACHMENT_LEFT_HAND);
+    PlayerHeldItem *held = &player_held[player_held_count];
+    if (!attached_item_create(&held->attached, &player_points, drawn,
+                              shield ? "shield" : "weapon", "",
+                              &equip->display))
+      continue;
+
+    held->drawn = held->attached.point;
+    const PAttachmentPoint *sheathed = attachment_points_find(
+        &player_points, sheath_point_of(slot, equip->info.inventory_type));
+    held->sheathed = sheathed ? *sheathed : held->drawn;
+    player_held_count++;
+  }
+}
+
+//what the character swings: a two handed weapon, a one handed one or fists
+static const char *player_attack_animation() {
+  PlayerEquipSlot *main_hand = &player_equip_slots[PLAYER_SLOT_MAIN_HAND];
+  if (!main_hand->have_info)
+    return "AttackUnarmed";
+  return main_hand->info.inventory_type == INVTYPE_2HWEAPON ? "Attack2H"
+                                                            : "Attack1H";
+}
+
 //call every live-mode frame, after pe_wowworld_poll(): for any equip slot
 //whose PLAYER_VISIBLE_ITEM entry has changed since last seen, resolves it
 //to a display id (CMSG_ITEM_QUERY_SINGLE), looks that up in
@@ -218,6 +287,8 @@ static void sync_player_equipment() {
   resolve_tauren_body(&PLAYER_APPEARANCE, &body);
   apply_equipment_texture(&player_model, &player_skin, &body, items,
                           item_count);
+
+  sync_player_held_items();
 }
 
 static const char *map = DEFAULT_MAP;
@@ -338,6 +409,7 @@ static void player_load() {
   pe_vk_create_shader(&shader_info);
 
   pe_vk_load_skin(&player_skin, &player_model, PLAYER_MODEL_PATH);
+  attachment_points_load(PLAYER_MODEL_PATH, &player_points);
   player_model.shader = player_shader;
 
   char player_skin_path[512];
@@ -384,6 +456,10 @@ static void player_place(vec3 position, float facing_degrees) {
   glm_translate(player_model.model_mat, render_position);
   glm_rotate(player_model.model_mat, glm_rad(facing_degrees), (vec3){0, 0, 1});
   glm_rotate(player_model.model_mat, glm_rad(90.0f), (vec3){1, 0, 0});
+  //the model's axes are right handed and this world is left handed: reflect the
+  //axis that carries left and right, or the character is its own mirror image
+  //and what it holds is in the wrong hand (see creatures_sync())
+  glm_scale(player_model.model_mat, (vec3){1, 1, -1});
   glm_vec3_copy(position, player_model.position);
 }
 
@@ -410,6 +486,14 @@ static void player_draw(VkCommandBuffer *command, uint32_t image_index) {
   draw.command_buffer = *command;
   draw.image_index = image_index;
   pe_vk_draw_model(&draw);
+
+  for (int i = 0; i < player_held_count; i++) {
+    PlayerHeldItem *held = &player_held[i];
+    held->attached.point = player_weapons_drawn ? held->drawn : held->sheathed;
+    attached_item_draw(&held->attached, &player_skin, player_model.model_mat,
+                       command, image_index, main_camera.view,
+                       main_camera.projection);
+  }
 }
 
 static void fill_lighting(PTerrainFrame *frame) {
@@ -778,6 +862,9 @@ static void update_live_character(float seconds) {
     locomotion_animation = in.strafe_left ? "ShuffleLeft" : "ShuffleRight";
   else if (moving)
     locomotion_animation = "Run";
+  else if (in.attack)
+    locomotion_animation = player_attack_animation();
+  player_weapons_drawn = in.attack;
   play_animation_by_name(&player_skin, locomotion_animation, true);
 
   character_follow_ground();

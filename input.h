@@ -17,6 +17,7 @@ typedef struct PwowFrameInput {
   bool strafe_right;
   bool turn_left;
   bool turn_right;
+  bool attack;
 } PwowFrameInput;
 
 void pwow_input_read(PwowFrameInput *out);

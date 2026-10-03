@@ -15,4 +15,8 @@ void pwow_input_read(PwowFrameInput *out) {
   out->strafe_right = input.E.pressed || (ad_strafes && input.D.pressed);
   out->turn_left = input.J.pressed || (!ad_strafes && input.A.pressed);
   out->turn_right = input.L.pressed || (!ad_strafes && input.D.pressed);
+
+  //there is no combat, so attacking is a key held: while it is, the character
+  //swings and holds its weapons
+  out->attack = input.F.pressed;
 }
