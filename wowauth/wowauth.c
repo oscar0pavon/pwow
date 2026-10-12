@@ -1,7 +1,7 @@
 #include "wowauth.h"
 #include "wow_wire.h"
 
-#include <engine/log.h>
+#include <pengine/log.h>
 
 #include <openssl/bn.h>
 #include <openssl/rand.h>

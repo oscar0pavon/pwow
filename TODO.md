@@ -170,7 +170,7 @@ Not done, roughly in the order they would be wanted:
 
 **Done**: `pfonts` (`/root/pfonts`) grew a Vulkan rendering backend
 (`vulkan.c`/`.h`), alongside its existing GL and CPU-pixel-buffer ones, and
-pengine wraps it as `engine/text.h`/`text.c` (`pe_text_init/sync/begin/
+pengine wraps it as `pengine/text.h`/`text.c` (`pe_text_init/sync/begin/
 draw/end`), wired into `pe_vk_draw_frame()` for the atlas upload and
 available to any `pe_vk_draw_scene` hook for drawing. `main.c`'s
 `pwow_draw_scene` uses it for a one-line HUD (map name + player position) -

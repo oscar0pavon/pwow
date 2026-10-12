@@ -1,7 +1,7 @@
 #ifndef PE_WOWAUTH_H
 #define PE_WOWAUTH_H
 
-#include <engine/numbers.h>
+#include <pengine/numbers.h>
 #include <stdbool.h>
 
 #define PE_WOWAUTH_REALMS_MAX 32

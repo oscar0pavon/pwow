@@ -6,7 +6,7 @@
 //sockets both connect with. not a public engine api, just plumbing one
 //login flow's two phases would otherwise duplicate
 
-#include <engine/numbers.h>
+#include <pengine/numbers.h>
 #include <stdbool.h>
 
 #include <openssl/sha.h>

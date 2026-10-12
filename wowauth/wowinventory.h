@@ -1,7 +1,7 @@
 #ifndef PE_WOWINVENTORY_H
 #define PE_WOWINVENTORY_H
 
-#include <engine/numbers.h>
+#include <pengine/numbers.h>
 #include <stdbool.h>
 
 //what the local player carries: the item and container objects the server

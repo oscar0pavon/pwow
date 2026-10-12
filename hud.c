@@ -4,9 +4,9 @@
 #include <stdio.h>
 #include <string.h>
 
-#include <engine/text.h>
-#include <engine/ui.h>
-#include <engine/utils.h>
+#include <pengine/text.h>
+#include <pengine/ui.h>
+#include <pengine/utils.h>
 #include <wowauth/wowobject.h>
 
 #include "ui_layout.h"

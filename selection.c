@@ -2,8 +2,8 @@
 
 #include <string.h>
 
-#include <engine/decal.h>
-#include <engine/ui.h>
+#include <pengine/decal.h>
+#include <pengine/ui.h>
 
 #include "creatures.h"
 #include "hud.h"

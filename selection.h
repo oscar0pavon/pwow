@@ -2,7 +2,7 @@
 #define PWOW_SELECTION_H
 
 #include <cglm/cglm.h>
-#include <engine/terrain/terrain_world.h>
+#include <pengine/terrain/terrain_world.h>
 #include <vulkan/vulkan_core.h>
 #include <wowauth/wowobject.h>
 

@@ -69,7 +69,7 @@ pick it up and drop it on another slot, Esc puts it down), the keys 1 to 9 and
 
 ## How it fits together
 `main.c` fills a `PGame` and calls `pengine_run()`; nearly all terrain,
-building and prop logic lives in pengine's `src/engine/terrain/`, and this
+building and prop logic lives in pengine's `src/pengine/terrain/`, and this
 repo is the application — and the exercise — on top of it. `wowauth/` is the
 one part that is pwow's alone rather than the engine's: login, realm and
 world-protocol code for a real vmangos server, which pengine (a general

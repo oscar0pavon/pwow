@@ -2,10 +2,10 @@
 #define PWOW_ATTACHED_H
 
 #include <cglm/cglm.h>
-#include <engine/model.h>
-#include <engine/numbers.h>
-#include <engine/renderer/vulkan.h>
-#include <engine/skeletal.h>
+#include <pengine/model.h>
+#include <pengine/numbers.h>
+#include <pengine/renderer/vulkan.h>
+#include <pengine/skeletal.h>
 
 #include "equipment.h"
 

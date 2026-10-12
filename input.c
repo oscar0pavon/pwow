@@ -1,6 +1,6 @@
 #include "input.h"
 
-#include <engine/input.h>
+#include <pengine/input.h>
 
 void pwow_input_read(PwowFrameInput *out) {
   out->forward = input.W.pressed;

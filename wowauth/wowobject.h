@@ -1,7 +1,7 @@
 #ifndef PE_WOWOBJECT_H
 #define PE_WOWOBJECT_H
 
-#include <engine/numbers.h>
+#include <pengine/numbers.h>
 #include <stdbool.h>
 
 #include "wowdialog.h"

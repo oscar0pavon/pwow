@@ -1,7 +1,7 @@
 #ifndef PE_WOWDIALOG_H
 #define PE_WOWDIALOG_H
 
-#include <engine/numbers.h>
+#include <pengine/numbers.h>
 #include <stdbool.h>
 
 //what an NPC says when it is talked to: the gossip menu (SMSG_GOSSIP_MESSAGE

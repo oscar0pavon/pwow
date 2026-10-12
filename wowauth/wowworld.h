@@ -1,7 +1,7 @@
 #ifndef PE_WOWWORLD_H
 #define PE_WOWWORLD_H
 
-#include <engine/numbers.h>
+#include <pengine/numbers.h>
 #include "wowobject.h"
 #include <stdbool.h>
 

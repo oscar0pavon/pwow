@@ -2,7 +2,7 @@
 #define PWOW_CREATURES_H
 
 #include <cglm/cglm.h>
-#include <engine/renderer/vulkan.h>
+#include <pengine/renderer/vulkan.h>
 #include <wowauth/wowobject.h>
 
 //renders the creatures pe_wowworld_poll() tracks in a PWowObjectState. a

@@ -1,9 +1,9 @@
 #ifndef PWOW_EQUIPMENT_H
 #define PWOW_EQUIPMENT_H
 
-#include <engine/model.h>
-#include <engine/numbers.h>
-#include <engine/skeletal.h>
+#include <pengine/model.h>
+#include <pengine/numbers.h>
+#include <pengine/skeletal.h>
 
 #include <stdbool.h>
 

@@ -2,7 +2,7 @@
 #define CAMERA_H
 
 #include <cglm/cglm.h>
-#include <engine/camera.h>
+#include <pengine/camera.h>
 
 //a third-person camera that orbits a moving target, the way WoWee's
 //CameraController::updateOrbitCamera does for a player character - stripped

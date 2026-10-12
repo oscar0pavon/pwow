@@ -1,8 +1,8 @@
 #ifndef PE_WOWDBC_H
 #define PE_WOWDBC_H
 
-#include <engine/file_loader.h>
-#include <engine/numbers.h>
+#include <pengine/file_loader.h>
+#include <pengine/numbers.h>
 #include <stdbool.h>
 
 //a WDBC file: a 20-byte header, then record_count * record_size bytes of
